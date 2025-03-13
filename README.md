@@ -1,4 +1,4 @@
-# Winn package
+# winn (White Noise Normalization) package for pre-processing metabolomics data
 
 
 Winn provides functions for metabolomics data correction using a multi-step pipeline:

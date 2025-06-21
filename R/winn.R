@@ -495,9 +495,9 @@ winn <- function(data,
     
     
     # Batch effect correction via ANOVA
-    message("Correcting batch effects using ANOVA-based residualization with FDR threshold: ", fdr_threshold, "...")
+    
     if(remove_batch_effects == "anova"){
-      message("Testing and removing batch (plate) effects using ANOVA")
+      message("Correcting batch effects using ANOVA-based residualization with FDR threshold: ", fdr_threshold, "...")
       batch_corrected <- anova_plate_correction(drift_corrected, plates, fdr_threshold = fdr_threshold)
     } else {
       message("Testing and removing batch (plate) effects using ComBat")

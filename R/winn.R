@@ -436,7 +436,7 @@ winn <- function(data,
               print(paste0("mean SDR within controls = ", sdr))
               mean_corr <- .mean_control_correlation(final_data, control_samples)
               print(paste0("mean correlation within controls = ", mean_corr))
-              score <- mean_corr - sdr
+              if(sdr > 0) score <- mean_corr - sdr else score <- mean_corr
               if (!is.na(score) && score > best_score) {
                 best_score      <- score
                 best_final_data <- final_data

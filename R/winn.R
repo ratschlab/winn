@@ -142,11 +142,12 @@ autocorrelation_correct <- function(data,
     segment <- data[, idx, drop = FALSE]
     seg_run <- if (!is.null(run_order)) run_order[idx] else seq_along(idx)
     if (detrend == "spline") {
-      spline_vals <- apply(segment, 1, function(x) {
-        fit <- tryCatch(mgcv::gam(x ~ s(seg_run, bs = "cr")), error = function(e) NULL)
-        if (is.null(fit)) rep(mean(x, na.rm = TRUE), length(x)) else (fit$fitted.values - as.numeric(fit$coefficients[1]))
+        spline_vals <- apply(segment, 1, function(x) {
+        log_seg <- log(x+1)
+        fit <- tryCatch(mgcv::gam(log_seg ~ s(seg_run, bs = "cr")), error = function(e) NULL)
+        if (is.null(fit)) lm(log_seg ~ seg_run)$fitted.values - mean(lm(log_seg ~ seg_run)$fitted.values) else (fit$fitted.values - mean(fit$fitted.values))
       })
-      detrended_data[, idx] <- data[, idx] - t(spline_vals)
+      detrended_data[, idx] <- exp(log(data[, idx] + 1) - t(spline_vals))
     } else if (detrend == "mean") {
       p_vals <- apply(segment, 1, function(x) {
         if (test == "Ljung-Box") {
@@ -161,10 +162,11 @@ autocorrelation_correct <- function(data,
       correct_ids <- which(p_vals < fdr_threshold)
       if (length(correct_ids) > 0) {
         spline_vals <- apply(segment[correct_ids, , drop = FALSE], 1, function(x) {
-          fit <- tryCatch(mgcv::gam(x ~ s(seg_run, bs = "cr")), error = function(e) NULL)
-          if (is.null(fit)) rep(mean(x, na.rm = TRUE), length(x)) else (fit$fitted.values - as.numeric(fit$coefficients[1]))
+          log_seg <- log(x+1)
+          fit <- tryCatch(mgcv::gam(log_seg ~ s(seg_run, bs = "cr")), error = function(e) NULL)
+          if (is.null(fit)) lm(log_seg ~ seg_run)$fitted.values - mean(lm(log_seg ~ seg_run)$fitted.values) else (fit$fitted.values - mean(fit$fitted.values))
         })
-        detrended_data[correct_ids, idx] <- data[correct_ids, idx] - t(spline_vals)
+        detrended_data[correct_ids, idx] <- exp(log(data[correct_ids, idx]+1) - t(spline_vals))
       }
       non_correct_ids <- setdiff(1:nrow(data), correct_ids)
       if (length(non_correct_ids) > 0) {

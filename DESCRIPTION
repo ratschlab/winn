@@ -1,5 +1,5 @@
-Package: Winn
-Title: Metabolomics Correction with Winn
+Package: winn
+Title: Metabolomics Correction with winn
 Version: 0.1.0
 Authors@R: person("Tanmay", "Tanna", email = "ttanna@ethz.ch", role = c("aut", "cre"))
 Description: Provides functions to correct metabolomics data including dilution, outlier, drift, and batch adjustments.

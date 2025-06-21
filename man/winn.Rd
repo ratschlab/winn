@@ -9,7 +9,7 @@ winn(
   plates = NULL,
   run_order = NULL,
   control_samples = NULL,
-  parameters = "fixed",
+  parameters = "auto",
   fdr_threshold = 0.05,
   median_adjustment = "shrink",
   detrend_non_autocorrelated = "mean",
@@ -29,7 +29,7 @@ winn(
 \item{control_samples}{An optional numeric vector representing the columns corresponding to control samples. If provided,
 these will be used for normalization and parameter tuning.}
 
-\item{parameters}{An optional character string specifying whether to use fixed ("fixed") or auto-detected ("auto") parameters in presence of control samples (default: "fixed").}
+\item{parameters}{An optional character string specifying whether to use fixed ("fixed") or auto-detected ("auto") parameters in presence of control samples (default: "auto").}
 
 \item{fdr_threshold}{A numeric value specifying the FDR threshold for drift and batch corrections (default: 0.05).}
 

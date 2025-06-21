@@ -335,7 +335,7 @@ scale_by_plate <- function(data, plates) {
 #' @param run_order An optional numeric vector representing the run order of samples.
 #' @param control_samples An optional numeric vector representing the columns corresponding to control samples. If provided,
 #' these will be used for normalization and parameter tuning.
-#' @param parameters An optional character string specifying whether to use fixed ("fixed") or auto-detected ("auto") parameters in presence of control samples (default: "fixed").
+#' @param parameters An optional character string specifying whether to use fixed ("fixed") or auto-detected ("auto") parameters in presence of control samples (default: "auto").
 #' @param fdr_threshold A numeric value specifying the FDR threshold for drift and batch corrections (default: 0.05).
 #' @param median_adjustment A character string specifying the method for median adjustment ("shrink", "normalize", or "none").
 #' @param detrend_non_autocorrelated A character string specifying the method for detrending non-autocorrelated metabolites ("mean" or "spline").
@@ -354,7 +354,7 @@ winn <- function(data,
                  plates = NULL,
                  run_order = NULL,
                  control_samples = NULL,
-                 parameters = "fixed",
+                 parameters = "auto",
                  fdr_threshold = 0.05,
                  median_adjustment = "shrink",
                  detrend_non_autocorrelated = "mean",
@@ -396,7 +396,7 @@ winn <- function(data,
     anova_fdr_options <- c(0.1, 0.05, 0.01)
     scale_options <- c(TRUE, FALSE)
     
-    best_mean_corr <- -Inf
+    best_score <- -Inf
     best_final_data <- NULL
     best_params <- list()
     
@@ -432,10 +432,13 @@ winn <- function(data,
                 batch_corrected
               }
               
+              sdr <- mean(apply(final_data[, control_samples], 1, function(x) sd(x, na.rm = TRUE)) / apply(final_data[, control_samples], 1, function(x) mean(x, na.rm = TRUE)))
+              print(paste0("mean SDR within controls = ", sdr))
               mean_corr <- .mean_control_correlation(final_data, control_samples)
               print(paste0("mean correlation within controls = ", mean_corr))
-              if (!is.na(mean_corr) && mean_corr > best_mean_corr) {
-                best_mean_corr <- mean_corr
+              score <- mean_corr - sdr
+              if (!is.na(score) && score > best_score) {
+                best_score      <- score
                 best_final_data <- final_data
                 best_params <- list(plate_option = plate_option,
                                     test = current_test,

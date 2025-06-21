@@ -9,10 +9,11 @@ winn(
   plates = NULL,
   run_order = NULL,
   control_samples = NULL,
-  parameters = c("fixed", "auto"),
+  parameters = "fixed",
   fdr_threshold = 0.05,
   median_adjustment = "shrink",
-  residualize_non_autocorrelated = "mean",
+  detrend_non_autocorrelated = "mean",
+  remove_batch_effects = "anova",
   test = "Ljung-Box",
   lag = 20,
   scale_by_plate = FALSE
@@ -28,13 +29,15 @@ winn(
 \item{control_samples}{An optional numeric vector representing the columns corresponding to control samples. If provided,
 these will be used for normalization and parameter tuning.}
 
-\item{parameters}{Character string specifying whether to use fixed ("fixed") or auto-detected ("auto") parameters in presence of control samples.}
+\item{parameters}{An optional character string specifying whether to use fixed ("fixed") or auto-detected ("auto") parameters in presence of control samples (default: "fixed").}
 
 \item{fdr_threshold}{A numeric value specifying the FDR threshold for drift and batch corrections (default: 0.05).}
 
 \item{median_adjustment}{A character string specifying the method for median adjustment ("shrink", "normalize", or "none").}
 
-\item{residualize_non_autocorrelated}{A character string specifying the method for drift correction ("mean" or "spline").}
+\item{detrend_non_autocorrelated}{A character string specifying the method for detrending non-autocorrelated metabolites ("mean" or "spline").}
+
+\item{remove_batch_effects}{A character string specifying the method for removing batch effects ("anova" or "combat").}
 
 \item{test}{A character string specifying the autocorrelation test ("Ljung-Box" or "DW").}
 

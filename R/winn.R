@@ -110,7 +110,7 @@ adjust_outliers_mad <- function(data) {
 #' @param plates A numeric vector indicating the plate (or segment) assignment for each sample.
 #' @param lag An integer specifying the lag to be used in the autocorrelation test.
 #' @param test A character string specifying the autocorrelation test to use ("Ljung-Box" or "DW").
-#' @param residualize A character string indicating the method for detrending ("mean" or "spline").
+#' @param detrend A character string indicating the method for detrending ("mean" or "spline").
 #' @param fdr_threshold A numeric value specifying the FDR threshold for significance.
 #' @return A numeric matrix with drift corrected.
 #' @examples
@@ -124,7 +124,7 @@ autocorrelation_correct <- function(data,
                                     plates,
                                     lag = 20,
                                     test = "Ljung-Box",
-                                    residualize = "mean",
+                                    detrend = "mean",
                                     fdr_threshold = 0.05) {
   if (!is.matrix(data)) stop("Data must be a numeric matrix.")
   if (!is.null(run_order) && length(run_order) != ncol(data)) {
@@ -141,13 +141,13 @@ autocorrelation_correct <- function(data,
     idx <- which(plates == plate)
     segment <- data[, idx, drop = FALSE]
     seg_run <- if (!is.null(run_order)) run_order[idx] else seq_along(idx)
-    if (residualize == "spline") {
+    if (detrend == "spline") {
       spline_vals <- apply(segment, 1, function(x) {
         fit <- tryCatch(mgcv::gam(x ~ s(seg_run, bs = "cr")), error = function(e) NULL)
-        if (is.null(fit)) rep(mean(x, na.rm = TRUE), length(x)) else fit$fitted.values
+        if (is.null(fit)) rep(mean(x, na.rm = TRUE), length(x)) else (fit$fitted.values - as.numeric(fit$coefficients[1]))
       })
       detrended_data[, idx] <- data[, idx] - t(spline_vals)
-    } else if (residualize == "mean") {
+    } else if (detrend == "mean") {
       p_vals <- apply(segment, 1, function(x) {
         if (test == "Ljung-Box") {
           tryCatch(Box.test(x, lag = lag, type = "Ljung-Box")$p.value, error = function(e) NA)
@@ -162,100 +162,121 @@ autocorrelation_correct <- function(data,
       if (length(correct_ids) > 0) {
         spline_vals <- apply(segment[correct_ids, , drop = FALSE], 1, function(x) {
           fit <- tryCatch(mgcv::gam(x ~ s(seg_run, bs = "cr")), error = function(e) NULL)
-          if (is.null(fit)) rep(mean(x, na.rm = TRUE), length(x)) else fit$fitted.values
+          if (is.null(fit)) rep(mean(x, na.rm = TRUE), length(x)) else (fit$fitted.values - as.numeric(fit$coefficients[1]))
         })
         detrended_data[correct_ids, idx] <- data[correct_ids, idx] - t(spline_vals)
       }
       non_correct_ids <- setdiff(1:nrow(data), correct_ids)
       if (length(non_correct_ids) > 0) {
-        detrended_data[non_correct_ids, idx] <- data[non_correct_ids, idx] - rowMeans(segment[non_correct_ids,], na.rm = TRUE)
+        detrended_data[non_correct_ids, idx] <- data[non_correct_ids, idx]
       }
     }
   }
   return(detrended_data)
 }
 
-#' Perform ANOVA on Metabolites Across Plates
+#' Perform ANOVA-based Mean-Only Batch Correction
 #'
-#' This function performs an ANOVA test for each metabolite to assess plate effects.
+#' This function runs an ANOVA test on each metabolite to detect plate effects,
+#' and then corrects significant plate effects by subtracting the estimated
+#' plate-specific shifts (while preserving the overall mean).
 #'
-#' @param data A numeric matrix with rows representing metabolites and columns representing samples.
-#' @param plates A numeric vector indicating the plate (or segment) assignment for each sample.
-#' @return A matrix with F-statistics, p-values, and FDR-adjusted p-values for each metabolite.
+#' @param data A numeric matrix (metabolites × samples).
+#' @param plates A factor or numeric vector indicating plate for each sample.
+#' @param fdr_threshold Significance threshold for FDR-adjusted p-values.
+#' @return A numeric matrix of corrected intensities.
 #' @examples
-#' your_data_matrix <- matrix(rnorm(200), nrow = 20)
-#' plates <- rep(1:4, length.out = ncol(your_data_matrix))
-#' aov_results <- anova_test(your_data_matrix, plates)
+#' mat <- matrix(rnorm(200), nrow=20)
+#' plates <- rep(1:4, length.out=ncol(mat))
+#' corrected <- anova_plate_correction(mat, plates, fdr_threshold=0.05)
 #' @export
-anova_test <- function(data, plates) {
+anova_plate_correction <- function(data, plates, fdr_threshold = 0.05) {
   if (!is.matrix(data) || !is.numeric(data)) {
     stop("Data must be a numeric matrix.")
   }
   if (length(plates) != ncol(data)) {
     stop("Length of plates must match number of columns in data.")
   }
+  plates <- factor(plates)
   if (length(unique(plates)) < 2) {
-    # If only one plate is available, ANOVA is not applicable.
-    n_metabolites <- nrow(data)
-    results <- matrix(NA, nrow = n_metabolites, ncol = 3)
-    colnames(results) <- c("F-statistic", "p-value", "p-adj")
-    return(results)
+    message("Only one plate detected. Skipping ANOVA-based correction.")
+    return(data)
   }
-  n_metabolites <- nrow(data)
-  results <- matrix(NA, nrow = n_metabolites, ncol = 2)
-  colnames(results) <- c("F-statistic", "p-value")
+  # 1. Perform ANOVA for each metabolite
+  n_met <- nrow(data)
+  pvals <- numeric(n_met)
+  for (i in seq_len(n_met)) {
+    df <- data.frame(value = data[i, ], plate = plates)
+    a <- aov(value ~ plate, data = df)
+    pvals[i] <- summary(a)[[1]]$`Pr(>F)`[1]
+  }
+  padj <- p.adjust(pvals, method = "fdr")
   
-  for (i in seq_len(n_metabolites)) {
-    df <- data.frame(value = data[i, ], group = as.factor(plates))
-    fit <- aov(value ~ group, data = df)
-    sfit <- summary(fit)
-    results[i, ] <- c(sfit[[1]]$`F value`[1], sfit[[1]]$`Pr(>F)`[1])
+  # 2. Correct only those with significant plate effects
+  corrected <- data
+  sig <- which(padj < fdr_threshold)
+  if (length(sig) > 0) {
+    overall_means <- rowMeans(data)
+    for (i in sig) {
+      # compute plate-specific and overall means
+      plate_means <- tapply(data[i, ], plates, mean, na.rm = TRUE)
+      shift <- plate_means - overall_means[i]
+      # subtract the shift for each sample
+      corrected[i, ] <- data[i, ] - shift[as.character(plates)]
+    }
   }
-  padj <- p.adjust(results[, "p-value"], method = "fdr")
-  results <- cbind(results, padj)
-  colnames(results) <- c("F-statistic", "p-value", "p-adj")
-  return(results)
+  return(corrected)
 }
 
-#' Residualize Data by Plate Based on ANOVA Results
+#' Perform ComBat Batch Correction by Plate
 #'
-#' This function adjusts metabolite intensities for significant plate effects identified via ANOVA.
+#' This function applies the empirical Bayes ComBat method to correct batch effects
+#' by plate, adjusting both location and scale parameters across plates.
 #'
-#' @param data A numeric matrix with rows representing metabolites and columns representing samples.
-#' @param plates A numeric vector indicating the plate (or segment) assignment for each sample.
-#' @param fdr_threshold A numeric value specifying the FDR threshold for significance.
-#' @return A numeric matrix with residualized intensities.
+#' @param data A numeric matrix (metabolites × samples).
+#' @param plates A factor or numeric vector indicating plate for each sample.
+#' @param par_prior Logical indicating whether to use parametric prior (default TRUE).
+#' @param mean_only Logical indicating mean-only adjustment (default FALSE).
+#' @param ref_batch Optional reference plate level for anchoring (default NULL).
+#' @return A numeric matrix of corrected intensities.
 #' @examples
-#' your_data_matrix <- matrix(rnorm(200), nrow = 20)
-#' plates <- rep(1:4, length.out = ncol(your_data_matrix))
-#' residualized_data <- residualize_by_plate_with_anova(your_data_matrix, plates)
+#' mat <- matrix(rnorm(200), nrow=20)
+#' plates <- rep(1:4, length.out=ncol(mat))
+#' corrected <- combat_plate_correction(mat, plates, par_prior = TRUE)
 #' @export
-residualize_by_plate_with_anova <- function(data, plates, fdr_threshold = 0.05) {
+combat_plate_correction <- function(data,
+                                    plates,
+                                    par_prior = TRUE,
+                                    mean_only = FALSE,
+                                    ref_batch = NULL) {
   if (!is.matrix(data) || !is.numeric(data)) {
     stop("Data must be a numeric matrix.")
   }
   if (length(plates) != ncol(data)) {
     stop("Length of plates must match number of columns in data.")
   }
+  if (!requireNamespace("sva", quietly = TRUE)) {
+    stop("Package 'sva' is required for ComBat correction. Please install it.")
+  }
+  plates <- factor(plates)
   if (length(unique(plates)) < 2) {
-    message("Only one plate detected. Skipping ANOVA-based residualization.")
+    message("Only one plate detected. Skipping ComBat-based correction.")
     return(data)
   }
   
-  aov_res <- anova_test(data, plates)
-  sig_rows <- which(aov_res[, "p-adj"] < fdr_threshold)
-  residualized <- data
-  if (length(sig_rows) > 0) {
-    for (plate in unique(plates)) {
-      idx <- which(plates == plate)
-      for (i in sig_rows) {
-        plate_mean <- mean(data[i, idx], na.rm = TRUE)
-        residualized[i, idx] <- data[i, idx] - plate_mean
-      }
-    }
-  }
-  return(residualized)
+  # design matrix with intercept only to preserve global mean
+  mod <- model.matrix(~1, data = data.frame(plate = plates))
+  
+  # apply ComBat
+  corrected <- sva::ComBat(dat = data,
+                           batch = plates,
+                           mod = mod,
+                           par.prior = par_prior,
+                           mean.only = mean_only,
+                           ref.batch = ref_batch)
+  return(corrected)
 }
+
 
 #' Scale Data by Plate
 #'
@@ -313,10 +334,11 @@ scale_by_plate <- function(data, plates) {
 #' @param run_order An optional numeric vector representing the run order of samples.
 #' @param control_samples An optional numeric vector representing the columns corresponding to control samples. If provided,
 #' these will be used for normalization and parameter tuning.
-#' @param parameters Character string specifying whether to use fixed ("fixed") or auto-detected ("auto") parameters in presence of control samples.
+#' @param parameters An optional character string specifying whether to use fixed ("fixed") or auto-detected ("auto") parameters in presence of control samples (default: "fixed").
 #' @param fdr_threshold A numeric value specifying the FDR threshold for drift and batch corrections (default: 0.05).
 #' @param median_adjustment A character string specifying the method for median adjustment ("shrink", "normalize", or "none").
-#' @param residualize_non_autocorrelated A character string specifying the method for drift correction ("mean" or "spline").
+#' @param detrend_non_autocorrelated A character string specifying the method for detrending non-autocorrelated metabolites ("mean" or "spline").
+#' @param remove_batch_effects A character string specifying the method for removing batch effects ("anova" or "combat").
 #' @param test A character string specifying the autocorrelation test ("Ljung-Box" or "DW").
 #' @param lag An integer specifying the lag for the autocorrelation test.
 #' @param scale_by_plate Logical indicating whether to scale data by plate after corrections.
@@ -331,14 +353,14 @@ winn <- function(data,
                  plates = NULL,
                  run_order = NULL,
                  control_samples = NULL,
-                 parameters = c("fixed", "auto"),
+                 parameters = "fixed",
                  fdr_threshold = 0.05,
                  median_adjustment = "shrink",
-                 residualize_non_autocorrelated = "mean",
+                 detrend_non_autocorrelated = "mean",
+                 remove_batch_effects = "anova",
                  test = "Ljung-Box",
                  lag = 20,
                  scale_by_plate = FALSE) {
-  parameters <- match.arg(parameters)
   
   if (!is.matrix(data) && !is.data.frame(data)) {
     stop("Data must be a matrix or data frame.")
@@ -357,18 +379,10 @@ winn <- function(data,
   
   message("Starting Winn correction...")
   
-  # Median adjustment using control samples if provided
-  if (median_adjustment == "none") {
-    message("Skipping median adjustment.")
-    norm_data <- data
-  } else {
-    message("Performing median adjustment using method: ", median_adjustment)
-    norm_data <- normalize_by_dilution_factor(data, processing = median_adjustment, control_samples = control_samples)
-  }
-  
+
   # Outlier adjustment
   message("Adjusting outliers using MAD...")
-  norm_data <- adjust_outliers_mad(norm_data)
+  norm_data <- adjust_outliers_mad(data)
   
   # If control samples are provided and auto parameter detection is enabled, perform grid search
   if (!is.null(control_samples) && parameters == "auto") {
@@ -403,12 +417,12 @@ winn <- function(data,
                                                      plates = current_plates,
                                                      lag = lag,
                                                      test = current_test,
-                                                     residualize = residualize_non_autocorrelated,
+                                                     detrend = detrend_non_autocorrelated,
                                                      fdr_threshold = acorr_fdr)
           for (anova_fdr in anova_fdr_options) {
             print(paste0("trying anova fdr = ", anova_fdr))
             # Batch effect correction with current ANOVA FDR
-            batch_corrected <- residualize_by_plate_with_anova(drift_corrected, current_plates, fdr_threshold = anova_fdr)
+            batch_corrected <- anova_plate_correction(drift_corrected, current_plates, fdr_threshold = anova_fdr)
             for (scale_opt in scale_options) {
               print(paste0("trying scale_option = ", scale_opt))
               final_data <- if (scale_opt) {
@@ -460,12 +474,32 @@ winn <- function(data,
                                                plates = plates,
                                                lag = lag,
                                                test = test,
-                                               residualize = residualize_non_autocorrelated,
+                                               detrend = detrend_non_autocorrelated,
                                                fdr_threshold = fdr_threshold)
+    
+
+    
+    # Median adjustment using control samples if provided
+    if (median_adjustment == "none") {
+      message("Skipping median adjustment.")
+      drift_corrected <- drift_corrected
+    } else {
+      message("Performing median adjustment using method: ", median_adjustment)
+      drift_corrected <- normalize_by_dilution_factor(drift_corrected, processing = median_adjustment, control_samples = control_samples)
+    }
+    
+    
     
     # Batch effect correction via ANOVA
     message("Correcting batch effects using ANOVA-based residualization with FDR threshold: ", fdr_threshold, "...")
-    batch_corrected <- residualize_by_plate_with_anova(drift_corrected, plates, fdr_threshold = fdr_threshold)
+    if(remove_batch_effects == "anova"){
+      message("Testing and removing batch (plate) effects using ANOVA")
+      batch_corrected <- anova_plate_correction(drift_corrected, plates, fdr_threshold = fdr_threshold)
+    } else {
+      message("Testing and removing batch (plate) effects using ComBat")
+      batch_corrected <- combat_plate_correction(drift_corrected, plates)
+      
+    }
     
     # Optional scaling by plate
     if (scale_by_plate) {

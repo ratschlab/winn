@@ -10,7 +10,7 @@ autocorrelation_correct(
   plates,
   lag = 20,
   test = "Ljung-Box",
-  residualize = "mean",
+  detrend = "mean",
   fdr_threshold = 0.05
 )
 }
@@ -25,7 +25,7 @@ autocorrelation_correct(
 
 \item{test}{A character string specifying the autocorrelation test to use ("Ljung-Box" or "DW").}
 
-\item{residualize}{A character string indicating the method for detrending ("mean" or "spline").}
+\item{detrend}{A character string indicating the method for detrending ("mean" or "spline").}
 
 \item{fdr_threshold}{A numeric value specifying the FDR threshold for significance.}
 }

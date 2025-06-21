@@ -18,7 +18,7 @@ A numeric matrix of scaled intensities.
 This function scales the values for each metabolite within each plate by subtracting the plate mean and dividing by the plate standard deviation.
 }
 \examples{
-your_data_matrix <- matrix(rnorm(200), nrow = 20)
+your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 plates <- rep(1:4, length.out = ncol(your_data_matrix))
 scaled_data <- scale_by_plate(your_data_matrix, plates)
 }

@@ -67,7 +67,7 @@ autocorrelation test type and FDR threshold, ANOVA FDR threshold, and scaling) b
 the mean correlation between control samples.
 }
 \examples{
-your_data_matrix <- matrix(rnorm(200), nrow = 20)
+your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 plates <- rep(1:4, length.out = ncol(your_data_matrix))
 run_order <- seq_len(ncol(your_data_matrix))
 corrected_data <- winn(your_data_matrix, plates = plates, run_order = run_order)

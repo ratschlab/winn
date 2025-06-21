@@ -16,6 +16,6 @@ A numeric matrix with adjusted outliers.
 This function adjusts outliers in a data matrix on a per-metabolite basis using the Median Absolute Deviation (MAD).
 }
 \examples{
-your_data_matrix <- matrix(rnorm(200), nrow = 20)
+your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 adjusted_data <- adjust_outliers_mad(your_data_matrix)
 }

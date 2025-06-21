@@ -27,6 +27,6 @@ if any samples have dilution factors that are more than one standard deviation a
 }
 \examples{
 # Example usage:
-your_data_matrix <- matrix(rnorm(200), nrow = 20)
+your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 normalized_data <- normalize_by_dilution_factor(your_data_matrix, control_samples = 1:4)
 }

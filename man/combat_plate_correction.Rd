@@ -31,7 +31,7 @@ This function applies the empirical Bayes ComBat method to correct batch effects
 by plate, adjusting both location and scale parameters across plates.
 }
 \examples{
-mat <- matrix(rnorm(200), nrow=20)
+mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
 plates <- rep(1:4, length.out=ncol(mat))
 corrected <- combat_plate_correction(mat, plates, par_prior = TRUE)
 }

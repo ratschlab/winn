@@ -36,7 +36,7 @@ A numeric matrix with drift corrected.
 This function corrects for drift effects in metabolomics data by detrending based on run order within each plate segment.
 }
 \examples{
-your_data_matrix <- matrix(rnorm(200), nrow = 20)
+your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 plates <- rep(1:4, length.out = ncol(your_data_matrix))
 run_order <- seq_len(ncol(your_data_matrix))
 drift_corrected <- autocorrelation_correct(your_data_matrix, run_order, plates)

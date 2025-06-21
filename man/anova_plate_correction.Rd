@@ -22,7 +22,7 @@ and then corrects significant plate effects by subtracting the estimated
 plate-specific shifts (while preserving the overall mean).
 }
 \examples{
-mat <- matrix(rnorm(200), nrow=20)
+mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
 plates <- rep(1:4, length.out=ncol(mat))
 corrected <- anova_plate_correction(mat, plates, fdr_threshold=0.05)
 }

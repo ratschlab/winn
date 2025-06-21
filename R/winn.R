@@ -14,7 +14,7 @@
 #' @return A numeric matrix of normalized intensities.
 #' @examples
 #' # Example usage:
-#' your_data_matrix <- matrix(rnorm(200), nrow = 20)
+#' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' normalized_data <- normalize_by_dilution_factor(your_data_matrix, control_samples = 1:4)
 #' @export
 normalize_by_dilution_factor <- function(data, processing = "shrink", control_samples = NULL) {
@@ -63,7 +63,7 @@ normalize_by_dilution_factor <- function(data, processing = "shrink", control_sa
 #' @param data A numeric matrix or data frame where rows represent metabolites and columns represent samples.
 #' @return A numeric matrix with adjusted outliers.
 #' @examples
-#' your_data_matrix <- matrix(rnorm(200), nrow = 20)
+#' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' adjusted_data <- adjust_outliers_mad(your_data_matrix)
 #' @export
 adjust_outliers_mad <- function(data) {
@@ -114,7 +114,7 @@ adjust_outliers_mad <- function(data) {
 #' @param fdr_threshold A numeric value specifying the FDR threshold for significance.
 #' @return A numeric matrix with drift corrected.
 #' @examples
-#' your_data_matrix <- matrix(rnorm(200), nrow = 20)
+#' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' plates <- rep(1:4, length.out = ncol(your_data_matrix))
 #' run_order <- seq_len(ncol(your_data_matrix))
 #' drift_corrected <- autocorrelation_correct(your_data_matrix, run_order, plates)
@@ -188,7 +188,7 @@ autocorrelation_correct <- function(data,
 #' @param fdr_threshold Significance threshold for FDR-adjusted p-values.
 #' @return A numeric matrix of corrected intensities.
 #' @examples
-#' mat <- matrix(rnorm(200), nrow=20)
+#' mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
 #' plates <- rep(1:4, length.out=ncol(mat))
 #' corrected <- anova_plate_correction(mat, plates, fdr_threshold=0.05)
 #' @export
@@ -204,7 +204,7 @@ anova_plate_correction <- function(data, plates, fdr_threshold = 0.05) {
     message("Only one plate detected. Skipping ANOVA-based correction.")
     return(data)
   }
-  # 1. Perform ANOVA for each metabolite
+  data <- log(data + 1)
   n_met <- nrow(data)
   pvals <- numeric(n_met)
   for (i in seq_len(n_met)) {
@@ -214,7 +214,6 @@ anova_plate_correction <- function(data, plates, fdr_threshold = 0.05) {
   }
   padj <- p.adjust(pvals, method = "fdr")
   
-  # 2. Correct only those with significant plate effects
   corrected <- data
   sig <- which(padj < fdr_threshold)
   if (length(sig) > 0) {
@@ -227,7 +226,7 @@ anova_plate_correction <- function(data, plates, fdr_threshold = 0.05) {
       corrected[i, ] <- data[i, ] - shift[as.character(plates)]
     }
   }
-  return(corrected)
+  return(exp(corrected))
 }
 
 #' Perform ComBat Batch Correction by Plate
@@ -242,7 +241,7 @@ anova_plate_correction <- function(data, plates, fdr_threshold = 0.05) {
 #' @param ref_batch Optional reference plate level for anchoring (default NULL).
 #' @return A numeric matrix of corrected intensities.
 #' @examples
-#' mat <- matrix(rnorm(200), nrow=20)
+#' mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
 #' plates <- rep(1:4, length.out=ncol(mat))
 #' corrected <- combat_plate_correction(mat, plates, par_prior = TRUE)
 #' @export
@@ -265,7 +264,7 @@ combat_plate_correction <- function(data,
     message("Only one plate detected. Skipping ComBat-based correction.")
     return(data)
   }
-  
+  data <- log(data+1)
   # design matrix with intercept only to preserve global mean
   mod <- model.matrix(~1, data = data.frame(plate = plates))
   
@@ -276,7 +275,7 @@ combat_plate_correction <- function(data,
                            par.prior = par_prior,
                            mean.only = mean_only,
                            ref.batch = ref_batch)
-  return(corrected)
+  return(exp(corrected))
 }
 
 
@@ -288,7 +287,7 @@ combat_plate_correction <- function(data,
 #' @param plates A numeric vector indicating the plate (or segment) assignment for each sample.
 #' @return A numeric matrix of scaled intensities.
 #' @examples
-#' your_data_matrix <- matrix(rnorm(200), nrow = 20)
+#' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' plates <- rep(1:4, length.out = ncol(your_data_matrix))
 #' scaled_data <- scale_by_plate(your_data_matrix, plates)
 #' @export
@@ -346,7 +345,7 @@ scale_by_plate <- function(data, plates) {
 #' @param scale_by_plate Logical indicating whether to scale data by plate after corrections.
 #' @return A numeric matrix of corrected intensities.
 #' @examples
-#' your_data_matrix <- matrix(rnorm(200), nrow = 20)
+#' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' plates <- rep(1:4, length.out = ncol(your_data_matrix))
 #' run_order <- seq_len(ncol(your_data_matrix))
 #' corrected_data <- winn(your_data_matrix, plates = plates, run_order = run_order)
@@ -623,7 +622,7 @@ if (interactive()) {
   
   test_that("normalize_by_dilution_factor works (with and without control samples)", {
     set.seed(1)
-    mat <- matrix(rnorm(100), nrow = 10)
+    mat <- matrix(rnorm(100, mean = 100, sd = 15), nrow = 10)
     res1 <- normalize_by_dilution_factor(mat)
     res2 <- normalize_by_dilution_factor(mat, control_samples = 1:5)
     expect_equal(dim(res1), dim(mat))
@@ -632,14 +631,14 @@ if (interactive()) {
   
   test_that("winn works with auto-detected plates", {
     set.seed(1)
-    mat <- matrix(rnorm(200), nrow = 20)
+    mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
     res <- winn(mat)
     expect_equal(dim(res), dim(mat))
   })
   
   test_that("winn works with provided plates", {
     set.seed(1)
-    mat <- matrix(rnorm(400), nrow = 20)
+    mat <- matrix(rnorm(400, mean = 100, sd = 15), nrow = 20)
     plates <- rep(1:4, each = 5)
     run_order <- seq_len(ncol(mat))
     res <- winn(mat, plates = plates, run_order = run_order)
@@ -648,7 +647,7 @@ if (interactive()) {
   
   test_that("winn auto detection with control samples works", {
     set.seed(1)
-    mat <- matrix(rnorm(400), nrow = 20)
+    mat <- matrix(rnorm(400, mean = 100, sd = 15), nrow = 20)
     plates <- rep(1:4, each = 5)
     run_order <- seq_len(ncol(mat))
     control_samples <- 1:4

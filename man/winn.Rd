@@ -9,7 +9,7 @@ winn(
   plates = NULL,
   run_order = NULL,
   control_samples = NULL,
-  parameters = "auto",
+  parameters = "fixed",
   fdr_threshold = 0.05,
   median_adjustment = "shrink",
   detrend_non_autocorrelated = "mean",

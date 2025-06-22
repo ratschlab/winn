@@ -392,6 +392,7 @@ winn <- function(data,
     # Define grid for parameter search
     plate_options <- if (!is.null(plates)) c("provided") else c("auto")
     tests <- c("Ljung-Box", "DW")
+    normalizations <- c("shrink", "normalize")
     acorr_fdr_options <- c(0.1, 0.05, 0.01)
     anova_fdr_options <- c(0.1, 0.05, 0.01)
     scale_options <- c(TRUE, FALSE)
@@ -424,27 +425,31 @@ winn <- function(data,
             print(paste0("trying anova fdr = ", anova_fdr))
             # Batch effect correction with current ANOVA FDR
             batch_corrected <- anova_plate_correction(drift_corrected, current_plates, fdr_threshold = anova_fdr)
-            for (scale_opt in scale_options) {
-              print(paste0("trying scale_option = ", scale_opt))
-              final_data <- if (scale_opt) {
-                scale_by_plate(batch_corrected, current_plates)
-              } else {
-                batch_corrected
-              }
+            for(normalize_opts in normalizations) {
+              print(paste0("trying normalization = ", normalize_opts))
+              batch_corrected <- normalize_by_dilution_factor(batch_corrected, processing = normalize_opts, control_samples = control_samples)
+              for (scale_opt in scale_options) {
+                print(paste0("trying scale_option = ", scale_opt))
+                final_data <- if (scale_opt) {
+                  scale_by_plate(batch_corrected, current_plates)
+                } else {
+                  batch_corrected
+                }
               
-              sdr <- mean(apply(final_data[, control_samples], 1, function(x) sd(x, na.rm = TRUE)) / apply(final_data[, control_samples], 1, function(x) mean(x, na.rm = TRUE)))
-              print(paste0("mean SDR within controls = ", sdr))
-              mean_corr <- .mean_control_correlation(final_data, control_samples)
-              print(paste0("mean correlation within controls = ", mean_corr))
-              if(sdr > 0) score <- mean_corr - sdr else score <- mean_corr
-              if (!is.na(score) && score > best_score) {
-                best_score      <- score
-                best_final_data <- final_data
-                best_params <- list(plate_option = plate_option,
-                                    test = current_test,
-                                    acorr_fdr = acorr_fdr,
-                                    anova_fdr = anova_fdr,
-                                    scale_by_plate = scale_opt)
+                sdr <- mean(apply(final_data[, control_samples], 1, function(x) sd(x, na.rm = TRUE)) / apply(final_data[, control_samples], 1, function(x) mean(x, na.rm = TRUE)))
+                print(paste0("mean SDR within controls = ", sdr))
+                mean_corr <- .mean_control_correlation(final_data, control_samples)
+                print(paste0("mean correlation within controls = ", mean_corr))
+                if(sdr > 0) score <- mean_corr - sdr else score <- mean_corr
+                if (!is.na(score) && score > best_score) {
+                  best_score      <- score
+                  best_final_data <- final_data
+                  best_params <- list(plate_option = plate_option,
+                                      test = current_test,
+                                      acorr_fdr = acorr_fdr,
+                                      anova_fdr = anova_fdr,
+                                      scale_by_plate = scale_opt)
+                }
               }
             }
           }
@@ -481,18 +486,6 @@ winn <- function(data,
                                                detrend = detrend_non_autocorrelated,
                                                fdr_threshold = fdr_threshold)
     
-
-    
-    # Median adjustment using control samples if provided
-    if (median_adjustment == "none") {
-      message("Skipping median adjustment.")
-      drift_corrected <- drift_corrected
-    } else {
-      message("Performing median adjustment using method: ", median_adjustment)
-      drift_corrected <- normalize_by_dilution_factor(drift_corrected, processing = median_adjustment, control_samples = control_samples)
-    }
-    
-    
     
     # Batch effect correction via ANOVA
     
@@ -503,6 +496,15 @@ winn <- function(data,
       message("Testing and removing batch (plate) effects using ComBat")
       batch_corrected <- combat_plate_correction(drift_corrected, plates)
       
+    }
+    
+    # Median adjustment using control samples if provided
+    if (median_adjustment == "none") {
+      message("Skipping median adjustment.")
+      batch_corrected <- batch_corrected
+    } else {
+      message("Performing median adjustment using method: ", median_adjustment)
+      batch_corrected<- normalize_by_dilution_factor(batch_corrected, processing = median_adjustment, control_samples = control_samples)
     }
     
     # Optional scaling by plate

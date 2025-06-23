@@ -103,11 +103,11 @@ adjust_outliers_mad <- function(data) {
 
 #' Correct for Drift in Data Using Autocorrelation Correction
 #'
-#' This function corrects for drift effects in metabolomics data by detrending based on run order within each plate segment.
+#' This function corrects for drift effects in metabolomics data by detrending based on run order within each batch segment.
 #'
 #' @param data A numeric matrix with rows representing metabolites and columns representing samples.
 #' @param run_order An optional numeric vector representing the run order of the samples.
-#' @param plates A numeric vector indicating the plate (or segment) assignment for each sample.
+#' @param batch A numeric vector indicating the batch (or segment) assignment for each sample.
 #' @param lag An integer specifying the lag to be used in the autocorrelation test.
 #' @param test A character string specifying the autocorrelation test to use ("Ljung-Box" or "DW").
 #' @param detrend A character string indicating the method for detrending ("mean" or "spline").
@@ -115,13 +115,13 @@ adjust_outliers_mad <- function(data) {
 #' @return A numeric matrix with drift corrected.
 #' @examples
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
-#' plates <- rep(1:4, length.out = ncol(your_data_matrix))
+#' batch <- rep(1:4, length.out = ncol(your_data_matrix))
 #' run_order <- seq_len(ncol(your_data_matrix))
-#' drift_corrected <- autocorrelation_correct(your_data_matrix, run_order, plates)
+#' drift_corrected <- autocorrelation_correct(your_data_matrix, run_order, batch)
 #' @export
 autocorrelation_correct <- function(data,
                                     run_order = NULL,
-                                    plates,
+                                    batch,
                                     lag = 20,
                                     test = "Ljung-Box",
                                     detrend = "mean",
@@ -130,15 +130,15 @@ autocorrelation_correct <- function(data,
   if (!is.null(run_order) && length(run_order) != ncol(data)) {
     stop("Length of run_order must match number of columns in data.")
   }
-  if (is.null(plates) || length(plates) != ncol(data)) {
-    stop("Plates vector must be provided and its length must equal number of columns in data.")
+  if (is.null(batch) || length(batch) != ncol(data)) {
+    stop("batch vector must be provided and its length must equal number of columns in data.")
   }
   
   detrended_data <- data
-  unique_plates <- unique(plates)
+  unique_batch <- unique(batch)
   
-  for (plate in unique_plates) {
-    idx <- which(plates == plate)
+  for (batch in unique_batch) {
+    idx <- which(batch == batch)
     segment <- data[, idx, drop = FALSE]
     seg_run <- if (!is.null(run_order)) run_order[idx] else seq_along(idx)
     if (detrend == "spline") {
@@ -179,37 +179,37 @@ autocorrelation_correct <- function(data,
 
 #' Perform ANOVA-based Mean-Only Batch Correction
 #'
-#' This function runs an ANOVA test on each metabolite to detect plate effects,
-#' and then corrects significant plate effects by subtracting the estimated
-#' plate-specific shifts (while preserving the overall mean).
+#' This function runs an ANOVA test on each metabolite to detect batch effects,
+#' and then corrects significant batch effects by subtracting the estimated
+#' batch-specific shifts (while preserving the overall mean).
 #'
 #' @param data A numeric matrix (metabolites × samples).
-#' @param plates A factor or numeric vector indicating plate for each sample.
+#' @param batch A factor or numeric vector indicating batch for each sample.
 #' @param fdr_threshold Significance threshold for FDR-adjusted p-values.
 #' @return A numeric matrix of corrected intensities.
 #' @examples
 #' mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
-#' plates <- rep(1:4, length.out=ncol(mat))
-#' corrected <- anova_plate_correction(mat, plates, fdr_threshold=0.05)
+#' batch <- rep(1:4, length.out=ncol(mat))
+#' corrected <- anova_batch_correction(mat, batch, fdr_threshold=0.05)
 #' @export
-anova_plate_correction <- function(data, plates, fdr_threshold = 0.05) {
+anova_batch_correction <- function(data, batch, fdr_threshold = 0.05) {
   if (!is.matrix(data) || !is.numeric(data)) {
     stop("Data must be a numeric matrix.")
   }
-  if (length(plates) != ncol(data)) {
-    stop("Length of plates must match number of columns in data.")
+  if (length(batch) != ncol(data)) {
+    stop("Length of batch must match number of columns in data.")
   }
-  plates <- factor(plates)
-  if (length(unique(plates)) < 2) {
-    message("Only one plate detected. Skipping ANOVA-based correction.")
+  batch <- factor(batch)
+  if (length(unique(batch)) < 2) {
+    message("Only one batch detected. Skipping ANOVA-based correction.")
     return(data)
   }
   data <- log(data + 1)
   n_met <- nrow(data)
   pvals <- numeric(n_met)
   for (i in seq_len(n_met)) {
-    df <- data.frame(value = data[i, ], plate = plates)
-    a <- aov(value ~ plate, data = df)
+    df <- data.frame(value = data[i, ], batch = batch)
+    a <- aov(value ~ batch, data = df)
     pvals[i] <- summary(a)[[1]]$`Pr(>F)`[1]
   }
   padj <- p.adjust(pvals, method = "fdr")
@@ -219,58 +219,58 @@ anova_plate_correction <- function(data, plates, fdr_threshold = 0.05) {
   if (length(sig) > 0) {
     overall_means <- rowMeans(data)
     for (i in sig) {
-      # compute plate-specific and overall means
-      plate_means <- tapply(data[i, ], plates, mean, na.rm = TRUE)
-      shift <- plate_means - overall_means[i]
+      # compute batch-specific and overall means
+      batch_means <- tapply(data[i, ], batch, mean, na.rm = TRUE)
+      shift <- batch_means - overall_means[i]
       # subtract the shift for each sample
-      corrected[i, ] <- data[i, ] - shift[as.character(plates)]
+      corrected[i, ] <- data[i, ] - shift[as.character(batch)]
     }
   }
   return(exp(corrected))
 }
 
-#' Perform ComBat Batch Correction by Plate
+#' Perform ComBat Batch Correction by batch
 #'
 #' This function applies the empirical Bayes ComBat method to correct batch effects
-#' by plate, adjusting both location and scale parameters across plates.
+#' by batch, adjusting both location and scale parameters across batch.
 #'
 #' @param data A numeric matrix (metabolites × samples).
-#' @param plates A factor or numeric vector indicating plate for each sample.
+#' @param batch A factor or numeric vector indicating batch for each sample.
 #' @param par_prior Logical indicating whether to use parametric prior (default TRUE).
 #' @param mean_only Logical indicating mean-only adjustment (default FALSE).
-#' @param ref_batch Optional reference plate level for anchoring (default NULL).
+#' @param ref_batch Optional reference batch level for anchoring (default NULL).
 #' @return A numeric matrix of corrected intensities.
 #' @examples
 #' mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
-#' plates <- rep(1:4, length.out=ncol(mat))
-#' corrected <- combat_plate_correction(mat, plates, par_prior = TRUE)
+#' batch <- rep(1:4, length.out=ncol(mat))
+#' corrected <- combat_batch_correction(mat, batch, par_prior = TRUE)
 #' @export
-combat_plate_correction <- function(data,
-                                    plates,
+combat_batch_correction <- function(data,
+                                    batch,
                                     par_prior = TRUE,
                                     mean_only = FALSE,
                                     ref_batch = NULL) {
   if (!is.matrix(data) || !is.numeric(data)) {
     stop("Data must be a numeric matrix.")
   }
-  if (length(plates) != ncol(data)) {
-    stop("Length of plates must match number of columns in data.")
+  if (length(batch) != ncol(data)) {
+    stop("Length of batch must match number of columns in data.")
   }
   if (!requireNamespace("sva", quietly = TRUE)) {
     stop("Package 'sva' is required for ComBat correction. Please install it.")
   }
-  plates <- factor(plates)
-  if (length(unique(plates)) < 2) {
-    message("Only one plate detected. Skipping ComBat-based correction.")
+  batch <- factor(batch)
+  if (length(unique(batch)) < 2) {
+    message("Only one batch detected. Skipping ComBat-based correction.")
     return(data)
   }
   data <- log(data+1)
   # design matrix with intercept only to preserve global mean
-  mod <- model.matrix(~1, data = data.frame(plate = plates))
+  mod <- model.matrix(~1, data = data.frame(batch = batch))
   
   # apply ComBat
   corrected <- sva::ComBat(dat = data,
-                           batch = plates,
+                           batch = batch,
                            mod = mod,
                            par.prior = par_prior,
                            mean.only = mean_only,
@@ -279,30 +279,30 @@ combat_plate_correction <- function(data,
 }
 
 
-#' Scale Data by Plate
+#' Scale Data by batch
 #'
-#' This function scales the values for each metabolite within each plate by subtracting the plate mean and dividing by the plate standard deviation.
+#' This function scales the values for each metabolite within each batch by subtracting the batch mean and dividing by the batch standard deviation.
 #'
 #' @param data A numeric matrix with rows representing metabolites and columns representing samples.
-#' @param plates A numeric vector indicating the plate (or segment) assignment for each sample.
+#' @param batch A numeric vector indicating the batch (or segment) assignment for each sample.
 #' @return A numeric matrix of scaled intensities.
 #' @examples
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
-#' plates <- rep(1:4, length.out = ncol(your_data_matrix))
-#' scaled_data <- scale_by_plate(your_data_matrix, plates)
+#' batch <- rep(1:4, length.out = ncol(your_data_matrix))
+#' scaled_data <- scale_by_batch(your_data_matrix, batch)
 #' @export
-scale_by_plate <- function(data, plates) {
+scale_by_batch <- function(data, batch) {
   if (!is.matrix(data) || !is.numeric(data)) {
     stop("Data must be a numeric matrix.")
   }
-  if (length(plates) != ncol(data)) {
-    stop("Length of plates must match number of columns in data.")
+  if (length(batch) != ncol(data)) {
+    stop("Length of batch must match number of columns in data.")
   }
   
   scaled_data <- data
-  unique_plates <- unique(plates)
-  for (plate in unique_plates) {
-    idx <- which(plates == plate)
+  unique_batch <- unique(batch)
+  for (batch in unique_batch) {
+    idx <- which(batch == batch)
     row_means <- rowMeans(data[, idx, drop = FALSE], na.rm = TRUE)
     row_sds <- apply(data[, idx, drop = FALSE], 1, sd, na.rm = TRUE)
     # Avoid division by zero by setting zero standard deviations to 1
@@ -315,23 +315,23 @@ scale_by_plate <- function(data, plates) {
 #' Winn Correction for Metabolomics Data
 #'
 #' This function performs a series of corrections on metabolomics data to adjust for dilution effects, outliers, drift, and batch effects.
-#' If plate information is not supplied, segments are automatically detected using an fkPELT-based approach and labeled as plates.
+#' If batch information is not supplied, segments are automatically detected using an fkPELT-based approach and labeled as batch.
 #'
 #' The correction pipeline is as follows:
 #' \enumerate{
-#'   \item Median adjustment by dilution factor.
 #'   \item Outlier adjustment using MAD.
 #'   \item Drift correction using autocorrelation-based detrending.
-#'   \item Batch effect correction using ANOVA-based residualization.
-#'   \item Optional scaling by plate.
+#'   \item Batch effect correction using ANOVA-based mean-adjustment or ComBat.
+#'   \item Per-sample median adjustment using dilution factor.
+#'   \item Optional scaling by batch.
 #' }
 #'
-#' When control samples are provided, the function can also auto-detect the optimal parameter settings (for plate detection,
+#' When control samples are provided, the function can also auto-detect the optimal parameter settings (for batch detection,
 #' autocorrelation test type and FDR threshold, ANOVA FDR threshold, and scaling) by selecting the combination that maximizes
 #' the mean correlation between control samples.
 #'
 #' @param data A numeric matrix or data frame where rows represent metabolites and columns represent samples.
-#' @param plates An optional numeric vector indicating plate assignments for each sample. If NULL, segments will be auto-detected.
+#' @param batch An optional numeric vector indicating batch assignments for each sample. If NULL, segments will be auto-detected.
 #' @param run_order An optional numeric vector representing the run order of samples.
 #' @param control_samples An optional numeric vector representing the columns corresponding to control samples. If provided,
 #' these will be used for normalization and parameter tuning.
@@ -342,16 +342,16 @@ scale_by_plate <- function(data, plates) {
 #' @param remove_batch_effects A character string specifying the method for removing batch effects ("anova" or "combat").
 #' @param test A character string specifying the autocorrelation test ("Ljung-Box" or "DW").
 #' @param lag An integer specifying the lag for the autocorrelation test.
-#' @param scale_by_plate Logical indicating whether to scale data by plate after corrections.
+#' @param scale_by_batch Logical indicating whether to scale data by batch after corrections.
 #' @return A numeric matrix of corrected intensities.
 #' @examples
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
-#' plates <- rep(1:4, length.out = ncol(your_data_matrix))
+#' batch <- rep(1:4, length.out = ncol(your_data_matrix))
 #' run_order <- seq_len(ncol(your_data_matrix))
-#' corrected_data <- winn(your_data_matrix, plates = plates, run_order = run_order)
+#' corrected_data <- winn(your_data_matrix, batch = batch, run_order = run_order)
 #' @export
 winn <- function(data,
-                 plates = NULL,
+                 batch = NULL,
                  run_order = NULL,
                  control_samples = NULL,
                  parameters = "fixed",
@@ -361,7 +361,7 @@ winn <- function(data,
                  remove_batch_effects = "anova",
                  test = "Ljung-Box",
                  lag = 20,
-                 scale_by_plate = FALSE) {
+                 scale_by_batch = FALSE) {
   
   if (!is.matrix(data) && !is.data.frame(data)) {
     stop("Data must be a matrix or data frame.")
@@ -390,7 +390,7 @@ winn <- function(data,
     message("Auto-detecting optimal parameters using control samples...")
     
     # Define grid for parameter search
-    plate_options <- if (!is.null(plates)) c("provided") else c("auto")
+    batch_options <- if (!is.null(batch)) c("provided") else c("auto")
     tests <- c("Ljung-Box", "DW")
     normalizations <- c("shrink", "normalize")
     acorr_fdr_options <- c(0.1, 0.05, 0.01)
@@ -401,12 +401,12 @@ winn <- function(data,
     best_final_data <- NULL
     best_params <- list()
     
-    for (plate_option in plate_options) {
-      print(paste0("trying plate_option = ", plate_option))
-      current_plates <- if (plate_option == "provided") {
-        plates
+    for (batch_option in batch_options) {
+      print(paste0("trying batch_option = ", batch_option))
+      current_batch <- if (batch_option == "provided") {
+        batch
       } else {
-        .auto_detect_plates(norm_data)
+        .auto_detect_batch(norm_data)
       }
       
       for (current_test in tests) {
@@ -416,7 +416,7 @@ winn <- function(data,
           # Drift correction with current autocorrelation parameters
           drift_corrected <- autocorrelation_correct(norm_data,
                                                      run_order = run_order,
-                                                     plates = current_plates,
+                                                     batch = current_batch,
                                                      lag = lag,
                                                      test = current_test,
                                                      detrend = detrend_non_autocorrelated,
@@ -424,14 +424,14 @@ winn <- function(data,
           for (anova_fdr in anova_fdr_options) {
             print(paste0("trying anova fdr = ", anova_fdr))
             # Batch effect correction with current ANOVA FDR
-            batch_corrected <- anova_plate_correction(drift_corrected, current_plates, fdr_threshold = anova_fdr)
+            batch_corrected <- anova_batch_correction(drift_corrected, current_batch, fdr_threshold = anova_fdr)
             for(normalize_opts in normalizations) {
               print(paste0("trying normalization = ", normalize_opts))
               batch_corrected <- normalize_by_dilution_factor(batch_corrected, processing = normalize_opts, control_samples = control_samples)
               for (scale_opt in scale_options) {
                 print(paste0("trying scale_option = ", scale_opt))
                 final_data <- if (scale_opt) {
-                  scale_by_plate(batch_corrected, current_plates)
+                  scale_by_batch(batch_corrected, current_batch)
                 } else {
                   batch_corrected
                 }
@@ -444,11 +444,11 @@ winn <- function(data,
                 if (!is.na(score) && score > best_score) {
                   best_score      <- score
                   best_final_data <- final_data
-                  best_params <- list(plate_option = plate_option,
+                  best_params <- list(batch_option = batch_option,
                                       test = current_test,
                                       acorr_fdr = acorr_fdr,
                                       anova_fdr = anova_fdr,
-                                      scale_by_plate = scale_opt)
+                                      scale_by_batch = scale_opt)
                 }
               }
             }
@@ -458,21 +458,21 @@ winn <- function(data,
     }
     
     message("Optimal parameters selected based on control samples:")
-    message("Plate option: ", best_params$plate_option)
+    message("batch option: ", best_params$batch_option)
     message("Autocorrelation test: ", best_params$test, " with FDR threshold: ", best_params$acorr_fdr)
     message("ANOVA FDR threshold: ", best_params$anova_fdr)
-    message("Scale by plate: ", best_params$scale_by_plate)
+    message("Scale by batch: ", best_params$scale_by_batch)
     
     final_data <- best_final_data
   } else {
     # Use fixed parameters
-    if (is.null(plates)) {
-      message("No plate information provided. Auto-detecting segments using fkPELT...")
-      plates <- .auto_detect_plates(norm_data)
-      message("Auto-detected ", max(plates), " segments as plates.")
+    if (is.null(batch)) {
+      message("No batch information provided. Auto-detecting segments using fkPELT...")
+      batch <- .auto_detect_batch(norm_data)
+      message("Auto-detected ", max(batch), " segments as batch.")
     } else {
-      if (length(plates) != n_samples) {
-        stop("Length of plates must match number of columns in data.")
+      if (length(batch) != n_samples) {
+        stop("Length of batch must match number of columns in data.")
       }
     }
     
@@ -480,7 +480,7 @@ winn <- function(data,
     message("Correcting drift using autocorrelation test (", test, ") with FDR threshold: ", fdr_threshold, "...")
     drift_corrected <- autocorrelation_correct(norm_data,
                                                run_order = run_order,
-                                               plates = plates,
+                                               batch = batch,
                                                lag = lag,
                                                test = test,
                                                detrend = detrend_non_autocorrelated,
@@ -491,10 +491,10 @@ winn <- function(data,
     
     if(remove_batch_effects == "anova"){
       message("Correcting batch effects using ANOVA-based residualization with FDR threshold: ", fdr_threshold, "...")
-      batch_corrected <- anova_plate_correction(drift_corrected, plates, fdr_threshold = fdr_threshold)
+      batch_corrected <- anova_batch_correction(drift_corrected, batch, fdr_threshold = fdr_threshold)
     } else {
-      message("Testing and removing batch (plate) effects using ComBat")
-      batch_corrected <- combat_plate_correction(drift_corrected, plates)
+      message("Testing and removing batch (batch) effects using ComBat")
+      batch_corrected <- combat_batch_correction(drift_corrected, batch)
       
     }
     
@@ -507,10 +507,10 @@ winn <- function(data,
       batch_corrected<- normalize_by_dilution_factor(batch_corrected, processing = median_adjustment, control_samples = control_samples)
     }
     
-    # Optional scaling by plate
-    if (scale_by_plate) {
-      message("Scaling data by plate...")
-      final_data <- scale_by_plate(batch_corrected, plates)
+    # Optional scaling by batch
+    if (scale_by_batch) {
+      message("Scaling data by batch...")
+      final_data <- scale_by_batch(batch_corrected, batch)
     } else {
       final_data <- batch_corrected
     }
@@ -524,8 +524,8 @@ winn <- function(data,
 # Internal Helper Functions (not exported)
 ###############################################################################
 
-.auto_detect_plates <- function(data) {
-  # Auto-detect segments as plates using fkPELT based on aggregated median signal
+.auto_detect_batch <- function(data) {
+  # Auto-detect segments as batch using fkPELT based on aggregated median signal
   agg_signal <- apply(data, 2, median, na.rm = TRUE)
   n <- length(agg_signal)
   num_knots <- floor(n / 60) + 2
@@ -538,11 +538,11 @@ winn <- function(data,
   }
   change_points <- .fkPELT(agg_signal, knots)
   tau <- c(0, change_points, n)
-  plates <- rep(NA, n)
+  batch <- rep(NA, n)
   for (i in seq_along(tau[-length(tau)])) {
-    plates[(tau[i] + 1):tau[i + 1]] <- i
+    batch[(tau[i] + 1):tau[i + 1]] <- i
   }
-  return(plates)
+  return(batch)
 }
 
 .mean_control_correlation <- function(data, control_samples) {
@@ -634,29 +634,29 @@ if (interactive()) {
     expect_equal(dim(res2), dim(mat))
   })
   
-  test_that("winn works with auto-detected plates", {
+  test_that("winn works with auto-detected batch", {
     set.seed(1)
     mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
     res <- winn(mat)
     expect_equal(dim(res), dim(mat))
   })
   
-  test_that("winn works with provided plates", {
+  test_that("winn works with provided batch", {
     set.seed(1)
     mat <- matrix(rnorm(400, mean = 100, sd = 15), nrow = 20)
-    plates <- rep(1:4, each = 5)
+    batch <- rep(1:4, each = 5)
     run_order <- seq_len(ncol(mat))
-    res <- winn(mat, plates = plates, run_order = run_order)
+    res <- winn(mat, batch = batch, run_order = run_order)
     expect_equal(dim(res), dim(mat))
   })
   
   test_that("winn auto detection with control samples works", {
     set.seed(1)
     mat <- matrix(rnorm(400, mean = 100, sd = 15), nrow = 20)
-    plates <- rep(1:4, each = 5)
+    batch <- rep(1:4, each = 5)
     run_order <- seq_len(ncol(mat))
     control_samples <- 1:4
-    res <- winn(mat, plates = plates, run_order = run_order, control_samples = control_samples, parameters = "auto")
+    res <- winn(mat, batch = batch, run_order = run_order, control_samples = control_samples, parameters = "auto")
     expect_equal(dim(res), dim(mat))
     # Optionally, one might test that the mean correlation among controls is above a minimal threshold.
   })

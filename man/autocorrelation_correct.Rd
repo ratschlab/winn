@@ -7,7 +7,7 @@
 autocorrelation_correct(
   data,
   run_order = NULL,
-  plates,
+  batch,
   lag = 20,
   test = "Ljung-Box",
   detrend = "mean",
@@ -19,7 +19,7 @@ autocorrelation_correct(
 
 \item{run_order}{An optional numeric vector representing the run order of the samples.}
 
-\item{plates}{A numeric vector indicating the plate (or segment) assignment for each sample.}
+\item{batch}{A numeric vector indicating the batch (or segment) assignment for each sample.}
 
 \item{lag}{An integer specifying the lag to be used in the autocorrelation test.}
 
@@ -33,11 +33,11 @@ autocorrelation_correct(
 A numeric matrix with drift corrected.
 }
 \description{
-This function corrects for drift effects in metabolomics data by detrending based on run order within each plate segment.
+This function corrects for drift effects in metabolomics data by detrending based on run order within each batch segment.
 }
 \examples{
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
-plates <- rep(1:4, length.out = ncol(your_data_matrix))
+batch <- rep(1:4, length.out = ncol(your_data_matrix))
 run_order <- seq_len(ncol(your_data_matrix))
-drift_corrected <- autocorrelation_correct(your_data_matrix, run_order, plates)
+drift_corrected <- autocorrelation_correct(your_data_matrix, run_order, batch)
 }

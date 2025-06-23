@@ -6,7 +6,7 @@
 \usage{
 winn(
   data,
-  plates = NULL,
+  batch = NULL,
   run_order = NULL,
   control_samples = NULL,
   parameters = "fixed",
@@ -16,13 +16,13 @@ winn(
   remove_batch_effects = "anova",
   test = "Ljung-Box",
   lag = 20,
-  scale_by_plate = FALSE
+  scale_by_batch = FALSE
 )
 }
 \arguments{
 \item{data}{A numeric matrix or data frame where rows represent metabolites and columns represent samples.}
 
-\item{plates}{An optional numeric vector indicating plate assignments for each sample. If NULL, segments will be auto-detected.}
+\item{batch}{An optional numeric vector indicating batch assignments for each sample. If NULL, segments will be auto-detected.}
 
 \item{run_order}{An optional numeric vector representing the run order of samples.}
 
@@ -43,32 +43,32 @@ these will be used for normalization and parameter tuning.}
 
 \item{lag}{An integer specifying the lag for the autocorrelation test.}
 
-\item{scale_by_plate}{Logical indicating whether to scale data by plate after corrections.}
+\item{scale_by_batch}{Logical indicating whether to scale data by batch after corrections.}
 }
 \value{
 A numeric matrix of corrected intensities.
 }
 \description{
 This function performs a series of corrections on metabolomics data to adjust for dilution effects, outliers, drift, and batch effects.
-If plate information is not supplied, segments are automatically detected using an fkPELT-based approach and labeled as plates.
+If batch information is not supplied, segments are automatically detected using an fkPELT-based approach and labeled as batch.
 }
 \details{
 The correction pipeline is as follows:
 \enumerate{
-  \item Median adjustment by dilution factor.
   \item Outlier adjustment using MAD.
   \item Drift correction using autocorrelation-based detrending.
-  \item Batch effect correction using ANOVA-based residualization.
-  \item Optional scaling by plate.
+  \item Batch effect correction using ANOVA-based mean-adjustment or ComBat.
+  \item Per-sample median adjustment using dilution factor.
+  \item Optional scaling by batch.
 }
 
-When control samples are provided, the function can also auto-detect the optimal parameter settings (for plate detection,
+When control samples are provided, the function can also auto-detect the optimal parameter settings (for batch detection,
 autocorrelation test type and FDR threshold, ANOVA FDR threshold, and scaling) by selecting the combination that maximizes
 the mean correlation between control samples.
 }
 \examples{
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
-plates <- rep(1:4, length.out = ncol(your_data_matrix))
+batch <- rep(1:4, length.out = ncol(your_data_matrix))
 run_order <- seq_len(ncol(your_data_matrix))
-corrected_data <- winn(your_data_matrix, plates = plates, run_order = run_order)
+corrected_data <- winn(your_data_matrix, batch = batch, run_order = run_order)
 }

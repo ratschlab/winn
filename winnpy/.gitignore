@@ -1,0 +1,17 @@
+@"
+# Python ignores
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.env
+.venv/
+.vscode/
+.idea/
+data/
+"@ | Out-File -Encoding utf8 .\winnpy\.gitignore

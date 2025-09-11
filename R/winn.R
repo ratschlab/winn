@@ -17,11 +17,14 @@
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' normalized_data <- normalize_by_dilution_factor(your_data_matrix, control_samples = 1:4)
 #' @export
-normalize_by_dilution_factor <- function(data, processing = "shrink", control_samples = NULL) {
+normalize_by_dilution_factor <- function(data,
+                                         processing = "shrink",
+                                         control_samples = NULL) {
   if (!is.matrix(data) && !is.data.frame(data)) {
     stop("Input data must be a matrix or data frame.")
   }
-  if (is.data.frame(data)) data <- as.matrix(data)
+  if (is.data.frame(data))
+    data <- as.matrix(data)
   
   if (!is.null(control_samples)) {
     # Calculate reference spectrum using control samples only
@@ -70,7 +73,8 @@ adjust_outliers_mad <- function(data) {
   if (!is.matrix(data) && !is.data.frame(data)) {
     stop("Input data must be a matrix or data frame.")
   }
-  if (is.data.frame(data)) data <- as.matrix(data)
+  if (is.data.frame(data))
+    data <- as.matrix(data)
   
   adjusted_data <- data
   for (i in 1:nrow(data)) {
@@ -78,23 +82,31 @@ adjust_outliers_mad <- function(data) {
     mad_val <- mad(data[i, ], na.rm = TRUE)
     lower_threshold <- med - 4 * mad_val
     upper_threshold <- med + 4 * mad_val
-    is_outlier <- data[i, ] <= lower_threshold | data[i, ] >= upper_threshold
+    is_outlier <- data[i, ] <= lower_threshold |
+      data[i, ] >= upper_threshold
     if (any(is_outlier)) {
       # For upper outliers
       if (any(is_outlier & data[i, ] >= upper_threshold)) {
-        ref_val <- max(data[i, !is_outlier & data[i, ] < upper_threshold], na.rm = TRUE)
+        ref_val <- max(data[i, !is_outlier &
+                              data[i, ] < upper_threshold], na.rm = TRUE)
         interp_val <- med + 3 * mad_val
-        adjusted_data[i, is_outlier & data[i, ] >= upper_threshold] <-
-          approx(c(ref_val, max(data[i, is_outlier & data[i, ] >= upper_threshold])),
+        adjusted_data[i, is_outlier &
+                        data[i, ] >= upper_threshold] <-
+          approx(c(ref_val, max(data[i, is_outlier &
+                                       data[i, ] >= upper_threshold])),
                  c(interp_val, upper_threshold),
-                 xout = data[i, is_outlier & data[i, ] >= upper_threshold])$y
+                 xout = data[i, is_outlier &
+                               data[i, ] >= upper_threshold])$y
       } else {
         ref_val <- min(data[i, is_outlier & data[i, ] <= lower_threshold])
         interp_val <- med - 3 * mad_val
-        adjusted_data[i, is_outlier & data[i, ] <= lower_threshold] <-
-          approx(c(ref_val, min(data[i, !is_outlier & data[i, ] > lower_threshold], na.rm = TRUE)),
+        adjusted_data[i, is_outlier &
+                        data[i, ] <= lower_threshold] <-
+          approx(c(ref_val, min(data[i, !is_outlier &
+                                       data[i, ] > lower_threshold], na.rm = TRUE)),
                  c(lower_threshold, interp_val),
-                 xout = data[i, is_outlier & data[i, ] <= lower_threshold])$y
+                 xout = data[i, is_outlier &
+                               data[i, ] <= lower_threshold])$y
       }
     }
   }
@@ -112,6 +124,7 @@ adjust_outliers_mad <- function(data) {
 #' @param test A character string specifying the autocorrelation test to use ("Ljung-Box" or "DW").
 #' @param detrend A character string indicating the method for detrending ("mean" or "spline").
 #' @param fdr_threshold A numeric value specifying the FDR threshold for significance.
+#' @param spline_method A character string specifying the spline method when detrend="spline" ("conservative" or "standard").
 #' @return A numeric matrix with drift corrected.
 #' @examples
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
@@ -125,8 +138,10 @@ autocorrelation_correct <- function(data,
                                     lag = 20,
                                     test = "Ljung-Box",
                                     detrend = "mean",
-                                    fdr_threshold = 0.05) {
-  if (!is.matrix(data)) stop("Data must be a numeric matrix.")
+                                    fdr_threshold = 0.05,
+                                    spline_method = "conservative") {
+  if (!is.matrix(data))
+    stop("Data must be a numeric matrix.")
   if (!is.null(run_order) && length(run_order) != ncol(data)) {
     stop("Length of run_order must match number of columns in data.")
   }
@@ -140,20 +155,42 @@ autocorrelation_correct <- function(data,
   for (batch in unique_batch) {
     idx <- which(batch == batch)
     segment <- data[, idx, drop = FALSE]
-    seg_run <- if (!is.null(run_order)) run_order[idx] else seq_along(idx)
+    seg_run <- if (!is.null(run_order))
+      run_order[idx]
+    else
+      seq_along(idx)
     if (detrend == "spline") {
-        spline_vals <- apply(segment, 1, function(x) {
-        log_seg <- log(x+1)
-        fit <- tryCatch(mgcv::gam(log_seg ~ s(seg_run, bs = "cr")), error = function(e) NULL)
-        if (is.null(fit)) lm(log_seg ~ seg_run)$fitted.values - mean(lm(log_seg ~ seg_run)$fitted.values) else (fit$fitted.values - mean(fit$fitted.values))
+      spline_vals <- apply(segment, 1, function(x) {
+        log_seg <- log(x + 1)
+        if (spline_method == "conservative") {
+          fit <- .fit_conservative_spline(log_seg, seg_run)
+        } else {
+          fit <- tryCatch(
+            mgcv::gam(log_seg ~ s(seg_run, bs = "cr")),
+            error = function(e)
+              NULL
+          )
+        }
+        if (is.null(fit))
+          lm(log_seg ~ seg_run)$fitted.values - mean(lm(log_seg ~ seg_run)$fitted.values)
+        else
+          (fit$fitted.values - mean(fit$fitted.values))
       })
       detrended_data[, idx] <- exp(log(data[, idx] + 1) - t(spline_vals))
     } else if (detrend == "mean") {
       p_vals <- apply(segment, 1, function(x) {
         if (test == "Ljung-Box") {
-          tryCatch(Box.test(x, lag = lag, type = "Ljung-Box")$p.value, error = function(e) NA)
+          tryCatch(
+            Box.test(x, lag = lag, type = "Ljung-Box")$p.value,
+            error = function(e)
+              NA
+          )
         } else if (test == "DW") {
-          tryCatch(lmtest::dwtest(x ~ seg_run)$p.value, error = function(e) NA)
+          tryCatch(
+            lmtest::dwtest(x ~ seg_run)$p.value,
+            error = function(e)
+              NA
+          )
         } else {
           stop("Invalid test method. Use 'Ljung-Box' or 'DW'.")
         }
@@ -162,13 +199,25 @@ autocorrelation_correct <- function(data,
       correct_ids <- which(p_vals < fdr_threshold)
       if (length(correct_ids) > 0) {
         spline_vals <- apply(segment[correct_ids, , drop = FALSE], 1, function(x) {
-          log_seg <- log(x+1)
-          fit <- tryCatch(mgcv::gam(log_seg ~ s(seg_run, bs = "cr")), error = function(e) NULL)
-          if (is.null(fit)) lm(log_seg ~ seg_run)$fitted.values - mean(lm(log_seg ~ seg_run)$fitted.values) else (fit$fitted.values - mean(fit$fitted.values))
+          log_seg <- log(x + 1)
+          if (spline_method == "conservative") {
+            fit <- .fit_conservative_spline(log_seg, seg_run)
+          } else {
+            fit <- tryCatch(
+              mgcv::gam(log_seg ~ s(seg_run, bs = "cr")),
+              error = function(e)
+                NULL
+            )
+          }
+          if (is.null(fit))
+            lm(log_seg ~ seg_run)$fitted.values - mean(lm(log_seg ~ seg_run)$fitted.values)
+          else
+            (fit$fitted.values - mean(fit$fitted.values))
         })
-        detrended_data[correct_ids, idx] <- exp(log(data[correct_ids, idx]+1) - t(spline_vals))
+        detrended_data[correct_ids, idx] <- exp(log(data[correct_ids, idx] +
+                                                      1) - t(spline_vals))
       }
-      non_correct_ids <- setdiff(1:nrow(data), correct_ids)
+      non_correct_ids <- setdiff(seq_len(nrow(data)), correct_ids)
       if (length(non_correct_ids) > 0) {
         detrended_data[non_correct_ids, idx] <- data[non_correct_ids, idx]
       }
@@ -264,17 +313,19 @@ combat_batch_correction <- function(data,
     message("Only one batch detected. Skipping ComBat-based correction.")
     return(data)
   }
-  data <- log(data+1)
+  data <- log(data + 1)
   # design matrix with intercept only to preserve global mean
-  mod <- model.matrix(~1, data = data.frame(batch = batch))
+  mod <- model.matrix( ~ 1, data = data.frame(batch = batch))
   
   # apply ComBat
-  corrected <- sva::ComBat(dat = data,
-                           batch = batch,
-                           mod = mod,
-                           par.prior = par_prior,
-                           mean.only = mean_only,
-                           ref.batch = ref_batch)
+  corrected <- sva::ComBat(
+    dat = data,
+    batch = batch,
+    mod = mod,
+    par.prior = par_prior,
+    mean.only = mean_only,
+    ref.batch = ref_batch
+  )
   return(exp(corrected))
 }
 
@@ -326,9 +377,10 @@ scale_by_batch <- function(data, batch) {
 #'   \item Optional scaling by batch.
 #' }
 #'
-#' When control samples are provided, the function can also auto-detect the optimal parameter settings (for batch detection,
-#' autocorrelation test type and FDR threshold, ANOVA FDR threshold, and scaling) by selecting the combination that maximizes
-#' the mean correlation between control samples.
+#' When control samples are provided and parameters="auto", the function performs comprehensive parameter
+#' optimization by testing multiple combinations of settings and selecting those that maximize control sample
+#' correlation while minimizing coefficient of variation. This includes optimization of spline methods,
+#' FDR thresholds, normalization approaches, and scaling options.
 #'
 #' @param data A numeric matrix or data frame where rows represent metabolites and columns represent samples.
 #' @param batch An optional numeric vector indicating batch assignments for each sample. If NULL, segments will be auto-detected.
@@ -339,6 +391,7 @@ scale_by_batch <- function(data, batch) {
 #' @param fdr_threshold A numeric value specifying the FDR threshold for drift and batch corrections (default: 0.05).
 #' @param median_adjustment A character string specifying the method for median adjustment ("shrink", "normalize", or "none").
 #' @param detrend_non_autocorrelated A character string specifying the method for detrending non-autocorrelated metabolites ("mean" or "spline").
+#' @param spline_method A character string specifying the spline method when detrend="spline" ("conservative" for robust drift removal or "standard" for traditional approach).
 #' @param remove_batch_effects A character string specifying the method for removing batch effects ("anova" or "combat").
 #' @param test A character string specifying the autocorrelation test ("Ljung-Box" or "DW").
 #' @param lag An integer specifying the lag for the autocorrelation test.
@@ -358,29 +411,74 @@ winn <- function(data,
                  fdr_threshold = 0.05,
                  median_adjustment = "shrink",
                  detrend_non_autocorrelated = "mean",
+                 spline_method = "conservative",
                  remove_batch_effects = "anova",
                  test = "Ljung-Box",
                  lag = 20,
                  scale_by_batch = FALSE) {
-  
+  # Input validation
   if (!is.matrix(data) && !is.data.frame(data)) {
     stop("Data must be a matrix or data frame.")
   }
-  if (is.data.frame(data)) data <- as.matrix(data)
-  if (!is.numeric(data)) stop("Data must be numeric.")
+  if (is.data.frame(data))
+    data <- as.matrix(data)
+  if (!is.numeric(data))
+    stop("Data must be numeric.")
+  if (any(is.na(data) | is.infinite(data))) {
+    warning("Data contains NA or infinite values. Results may be unreliable.")
+  }
+  
   n_samples <- ncol(data)
+  n_metabolites <- nrow(data)
+  
+  if (n_samples < 3)
+    stop("At least 3 samples required.")
+  if (n_metabolites < 1)
+    stop("At least 1 metabolite required.")
+  
   if (!is.null(run_order) && length(run_order) != n_samples) {
     stop("Length of run_order must match number of columns in data.")
   }
-  if (!is.null(control_samples)){
-    if (any(is.na(match(control_samples, 1:n_samples)))) {
-      stop("Control samples should refer to column numbers in the data matrix.")
+  
+  if (!is.null(control_samples)) {
+    if (any(is.na(match(control_samples, seq_len(n_samples))))) {
+      stop("Control samples should refer to valid column numbers in the data matrix.")
     }
+    if (length(control_samples) < 2 && parameters == "auto") {
+      stop("At least 2 control samples required for parameter optimization.")
+    }
+  }
+  
+  # Parameter validation
+  if (!parameters %in% c("fixed", "auto")) {
+    stop("parameters must be either 'fixed' or 'auto'.")
+  }
+  if (!spline_method %in% c("conservative", "standard")) {
+    stop("spline_method must be either 'conservative' or 'standard'.")
+  }
+  if (!detrend_non_autocorrelated %in% c("mean", "spline")) {
+    stop("detrend_non_autocorrelated must be either 'mean' or 'spline'.")
+  }
+  if (!median_adjustment %in% c("shrink", "normalize", "none")) {
+    stop("median_adjustment must be 'shrink', 'normalize', or 'none'.")
+  }
+  if (!remove_batch_effects %in% c("anova", "combat")) {
+    stop("remove_batch_effects must be either 'anova' or 'combat'.")
+  }
+  if (!test %in% c("Ljung-Box", "DW")) {
+    stop("test must be either 'Ljung-Box' or 'DW'.")
+  }
+  
+  if (fdr_threshold <= 0 || fdr_threshold >= 1) {
+    stop("fdr_threshold must be between 0 and 1.")
+  }
+  if (lag <= 0 || lag != round(lag)) {
+    stop("lag must be a positive integer.")
   }
   
   message("Starting Winn correction...")
   
-
+  
   # Outlier adjustment
   message("Adjusting outliers using MAD...")
   norm_data <- adjust_outliers_mad(data)
@@ -390,19 +488,28 @@ winn <- function(data,
     message("Auto-detecting optimal parameters using control samples...")
     
     # Define grid for parameter search
-    batch_options <- if (!is.null(batch)) c("provided") else c("auto")
+    batch_options <- if (!is.null(batch))
+      c("provided")
+    else
+      c("auto")
     tests <- c("Ljung-Box", "DW")
     normalizations <- c("shrink", "normalize")
     acorr_fdr_options <- c(0.1, 0.05, 0.01)
     anova_fdr_options <- c(0.1, 0.05, 0.01)
     scale_options <- c(TRUE, FALSE)
+    spline_methods <- c("conservative", "standard")  # Add spline method optimization
     
     best_score <- -Inf
     best_final_data <- NULL
     best_params <- list()
     
+    # Progress tracking for parameter optimization
+    total_combinations <- length(batch_options) * length(tests) * length(spline_methods) *
+      length(acorr_fdr_options) * length(anova_fdr_options) *
+      length(normalizations) * length(scale_options)
+    current_combination <- 0
+    
     for (batch_option in batch_options) {
-      print(paste0("trying batch_option = ", batch_option))
       current_batch <- if (batch_option == "provided") {
         batch
       } else {
@@ -410,45 +517,99 @@ winn <- function(data,
       }
       
       for (current_test in tests) {
-        print(paste0("trying test = ", current_test))
-        for (acorr_fdr in acorr_fdr_options) {
-          print(paste0("trying fdr = ", acorr_fdr))
-          # Drift correction with current autocorrelation parameters
-          drift_corrected <- autocorrelation_correct(norm_data,
-                                                     run_order = run_order,
-                                                     batch = current_batch,
-                                                     lag = lag,
-                                                     test = current_test,
-                                                     detrend = detrend_non_autocorrelated,
-                                                     fdr_threshold = acorr_fdr)
-          for (anova_fdr in anova_fdr_options) {
-            print(paste0("trying anova fdr = ", anova_fdr))
-            # Batch effect correction with current ANOVA FDR
-            batch_corrected <- anova_batch_correction(drift_corrected, current_batch, fdr_threshold = anova_fdr)
-            for(normalize_opts in normalizations) {
-              print(paste0("trying normalization = ", normalize_opts))
-              batch_corrected <- normalize_by_dilution_factor(batch_corrected, processing = normalize_opts, control_samples = control_samples)
-              for (scale_opt in scale_options) {
-                print(paste0("trying scale_option = ", scale_opt))
-                final_data <- if (scale_opt) {
-                  scale_by_batch(batch_corrected, current_batch)
-                } else {
-                  batch_corrected
-                }
+        for (spline_method in spline_methods) {
+          for (acorr_fdr in acorr_fdr_options) {
+            # Drift correction with current autocorrelation parameters
+            drift_corrected <- tryCatch({
+              autocorrelation_correct(
+                norm_data,
+                run_order = run_order,
+                batch = current_batch,
+                lag = lag,
+                test = current_test,
+                detrend = detrend_non_autocorrelated,
+                fdr_threshold = acorr_fdr,
+                spline_method = spline_method
+              )
+            }, error = function(e) {
+              # Silently skip failed parameter combinations during optimization
+              return(NULL)
+            })
+            
+            if (is.null(drift_corrected))
+              next
+            
+            for (anova_fdr in anova_fdr_options) {
+              # Batch effect correction with current ANOVA FDR
+              batch_corrected <- tryCatch({
+                anova_batch_correction(drift_corrected,
+                                       current_batch,
+                                       fdr_threshold = anova_fdr)
+              }, error = function(e) {
+                return(NULL)
+              })
               
-                sdr <- mean(apply(final_data[, control_samples], 1, function(x) sd(x, na.rm = TRUE)) / apply(final_data[, control_samples], 1, function(x) mean(x, na.rm = TRUE)))
-                print(paste0("mean SDR within controls = ", sdr))
-                mean_corr <- .mean_control_correlation(final_data, control_samples)
-                print(paste0("mean correlation within controls = ", mean_corr))
-                if(sdr > 0) score <- mean_corr - sdr else score <- mean_corr
-                if (!is.na(score) && score > best_score) {
-                  best_score      <- score
-                  best_final_data <- final_data
-                  best_params <- list(batch_option = batch_option,
-                                      test = current_test,
-                                      acorr_fdr = acorr_fdr,
-                                      anova_fdr = anova_fdr,
-                                      scale_by_batch = scale_opt)
+              if (is.null(batch_corrected))
+                next
+              
+              for (normalize_opts in normalizations) {
+                normalized_data <- tryCatch({
+                  normalize_by_dilution_factor(
+                    batch_corrected,
+                    processing = normalize_opts,
+                    control_samples = control_samples
+                  )
+                }, error = function(e) {
+                  return(NULL)
+                })
+                
+                if (is.null(normalized_data))
+                  next
+                
+                for (scale_opt in scale_options) {
+                  current_combination <- current_combination + 1
+                  
+                  if (current_combination %% max(1, floor(total_combinations / 10)) == 0) {
+                    message(
+                      "Parameter optimization progress: ",
+                      round(
+                        100 * current_combination / total_combinations,
+                        1
+                      ),
+                      "%"
+                    )
+                  }
+                  
+                  final_data <- if (scale_opt) {
+                    tryCatch({
+                      scale_by_batch(normalized_data, current_batch)
+                    }, error = function(e)
+                      normalized_data)
+                  } else {
+                    normalized_data
+                  }
+                  
+                  # Calculate quality metrics
+                  quality_metrics <- .calculate_quality_score(final_data, control_samples)
+                  if (is.na(quality_metrics$score))
+                    next
+                  
+                  if (quality_metrics$score > best_score) {
+                    best_score <- quality_metrics$score
+                    best_final_data <- final_data
+                    best_params <- list(
+                      batch_option = batch_option,
+                      test = current_test,
+                      spline_method = spline_method,
+                      acorr_fdr = acorr_fdr,
+                      anova_fdr = anova_fdr,
+                      normalization = normalize_opts,
+                      scale_by_batch = scale_opt,
+                      quality_score = quality_metrics$score,
+                      mean_cv = quality_metrics$mean_cv,
+                      mean_correlation = quality_metrics$mean_correlation
+                    )
+                  }
                 }
               }
             }
@@ -457,11 +618,27 @@ winn <- function(data,
       }
     }
     
+    if (is.null(best_final_data)) {
+      stop("Parameter optimization failed. No valid parameter combination found.")
+    }
+    
     message("Optimal parameters selected based on control samples:")
-    message("batch option: ", best_params$batch_option)
-    message("Autocorrelation test: ", best_params$test, " with FDR threshold: ", best_params$acorr_fdr)
-    message("ANOVA FDR threshold: ", best_params$anova_fdr)
-    message("Scale by batch: ", best_params$scale_by_batch)
+    message("  Batch detection: ", best_params$batch_option)
+    message("  Autocorrelation test: ",
+            best_params$test,
+            " (FDR: ",
+            best_params$acorr_fdr,
+            ")")
+    message("  Spline method: ", best_params$spline_method)
+    message("  Batch correction FDR: ", best_params$anova_fdr)
+    message("  Normalization: ", best_params$normalization)
+    message("  Scale by batch: ", best_params$scale_by_batch)
+    message(
+      "  Quality metrics - CV: ",
+      round(best_params$mean_cv, 4),
+      ", Correlation: ",
+      round(best_params$mean_correlation, 4)
+    )
     
     final_data <- best_final_data
   } else {
@@ -477,20 +654,33 @@ winn <- function(data,
     }
     
     # Drift correction
-    message("Correcting drift using autocorrelation test (", test, ") with FDR threshold: ", fdr_threshold, "...")
-    drift_corrected <- autocorrelation_correct(norm_data,
-                                               run_order = run_order,
-                                               batch = batch,
-                                               lag = lag,
-                                               test = test,
-                                               detrend = detrend_non_autocorrelated,
-                                               fdr_threshold = fdr_threshold)
+    message(
+      "Correcting drift using autocorrelation test (",
+      test,
+      ") with FDR threshold: ",
+      fdr_threshold,
+      "..."
+    )
+    drift_corrected <- autocorrelation_correct(
+      norm_data,
+      run_order = run_order,
+      batch = batch,
+      lag = lag,
+      test = test,
+      detrend = detrend_non_autocorrelated,
+      fdr_threshold = fdr_threshold,
+      spline_method = spline_method
+    )
     
     
     # Batch effect correction via ANOVA
     
-    if(remove_batch_effects == "anova"){
-      message("Correcting batch effects using ANOVA-based residualization with FDR threshold: ", fdr_threshold, "...")
+    if (remove_batch_effects == "anova") {
+      message(
+        "Correcting batch effects using ANOVA-based residualization with FDR threshold: ",
+        fdr_threshold,
+        "..."
+      )
       batch_corrected <- anova_batch_correction(drift_corrected, batch, fdr_threshold = fdr_threshold)
     } else {
       message("Testing and removing batch (batch) effects using ComBat")
@@ -503,8 +693,11 @@ winn <- function(data,
       message("Skipping median adjustment.")
       batch_corrected <- batch_corrected
     } else {
-      message("Performing median adjustment using method: ", median_adjustment)
-      batch_corrected<- normalize_by_dilution_factor(batch_corrected, processing = median_adjustment, control_samples = control_samples)
+      message("Performing median adjustment using method: ",
+              median_adjustment)
+      batch_corrected <- normalize_by_dilution_factor(batch_corrected,
+                                                      processing = median_adjustment,
+                                                      control_samples = control_samples)
     }
     
     # Optional scaling by batch
@@ -548,14 +741,129 @@ winn <- function(data,
 .mean_control_correlation <- function(data, control_samples) {
   # Calculate mean pairwise correlation among control sample columns
   control_data <- data[, control_samples, drop = FALSE]
-  if(ncol(control_data) < 2) return(NA)
+  if (ncol(control_data) < 2)
+    return(NA)
   corr_matrix <- cor(control_data, use = "pairwise.complete.obs")
   lower_tri <- corr_matrix[lower.tri(corr_matrix)]
   return(mean(lower_tri, na.rm = TRUE))
 }
 
+.calculate_quality_score <- function(data, control_samples) {
+  # Calculate comprehensive quality score for parameter optimization
+  tryCatch({
+    control_data <- data[, control_samples, drop = FALSE]
+    
+    # Calculate coefficient of variation (CV) for each metabolite in controls
+    cvs <- apply(control_data, 1, function(x) {
+      mu <- mean(x, na.rm = TRUE)
+      if (mu == 0)
+        return(NA)
+      sd(x, na.rm = TRUE) / abs(mu)
+    })
+    mean_cv <- mean(cvs, na.rm = TRUE)
+    
+    # Calculate mean pairwise correlation within controls
+    mean_correlation <- .mean_control_correlation(data, control_samples)
+    
+    # Combined score: higher correlation is better, lower CV is better
+    # Use weighted combination with correlation being primary metric
+    if (is.na(mean_correlation) || is.na(mean_cv)) {
+      score <- NA
+    } else {
+      # Normalize and combine: correlation (0 to 1) - penalty for high CV
+      score <- mean_correlation - (mean_cv * 0.5)  # CV penalty weighted at 50%
+    }
+    
+    return(list(
+      score = score,
+      mean_cv = mean_cv,
+      mean_correlation = mean_correlation
+    ))
+  }, error = function(e) {
+    return(list(
+      score = NA,
+      mean_cv = NA,
+      mean_correlation = NA
+    ))
+  })
+}
+
+.fit_conservative_spline <- function(y, x) {
+  # Conservative spline fitting with optimal parameters for drift removal
+  n <- length(y)
+  
+  # For very short segments, use linear regression
+  if (n < 5) {
+    fit <- tryCatch(
+      lm(y ~ x),
+      error = function(e)
+        NULL
+    )
+    return(fit)
+  }
+  
+  # For longer segments, use conservative GAM parameters
+  # Calculate optimal k (number of basis functions) - conservative approach
+  k_max <- max(4, min(10, floor(n / 5)))
+  
+  # Try multiple approaches in order of conservatism
+  # 1. P-splines with REML and gamma penalty
+  fit <- tryCatch({
+    mgcv::gam(y ~ s(x, bs = "ps", k = k_max),
+              method = "REML",
+              gamma = 1.4)  # Conservative gamma > 1
+  }, error = function(e)
+    NULL)
+  
+  if (!is.null(fit))
+    return(fit)
+  
+  # 2. Thin plate splines with conservative settings
+  fit <- tryCatch({
+    mgcv::gam(y ~ s(x, bs = "tp", k = k_max),
+              method = "REML",
+              gamma = 1.2)
+  }, error = function(e)
+    NULL)
+  
+  if (!is.null(fit))
+    return(fit)
+  
+  # 3. Cubic regression splines with fixed df (very conservative)
+  fit <- tryCatch({
+    mgcv::gam(y ~ s(
+      x,
+      bs = "cr",
+      k = min(6, k_max),
+      fx = TRUE
+    ))
+  }, error = function(e)
+    NULL)
+  
+  if (!is.null(fit))
+    return(fit)
+  
+  # 4. Fallback to LOESS
+  fit <- tryCatch({
+    loess_fit <- loess(y ~ x, span = 0.3, degree = 1)
+    list(fitted.values = loess_fit$fitted)
+  }, error = function(e)
+    NULL)
+  
+  if (!is.null(fit))
+    return(fit)
+  
+  # 5. Final fallback to linear regression
+  return(tryCatch(
+    lm(y ~ x),
+    error = function(e)
+      NULL
+  ))
+}
+
 .fkPELT <- function(data, knots) {
-  if (is.null(data)) stop("Data cannot be NULL in .fkPELT")
+  if (is.null(data))
+    stop("Data cannot be NULL in .fkPELT")
   n <- length(data)
   penalty <- 3 * log(300) # 3*log(300) is the penalty constant that we use
   # in the PELT algorithm. Inspired by BIC criterion but modified.
@@ -572,7 +880,10 @@ winn <- function(data,
     for (r in seq_len(m)) {
       start_idx <- R[[t]][r] + 1
       seg_data <- data[start_idx:t]
-      neglog[r] <- .fksplinecost(seg_data, knots, index1 = R[[t]][r] + 1, index2 = t)
+      neglog[r] <- .fksplinecost(seg_data,
+                                 knots,
+                                 index1 = R[[t]][r] + 1,
+                                 index2 = t)
     }
     stat <- numeric(m)
     for (r in seq_len(m)) {
@@ -597,24 +908,36 @@ winn <- function(data,
   return(cp_final)
 }
 
-.fksplinecost <- function(data, knots, index1 = 1, index2 = length(data)) {
+.fksplinecost <- function(data,
+                          knots,
+                          index1 = 1,
+                          index2 = length(data)) {
   size <- length(data)
-  if (size == 1) return(0)
+  if (size == 1)
+    return(0)
   if (size < 5) {
     sd_val <- sd(data, na.rm = TRUE)
     mu_val <- mean(data, na.rm = TRUE)
-    if (sd_val <= 1e-5) return(0)
+    if (sd_val <= 1e-5)
+      return(0)
     neglog <- 2 * (sum((data - mu_val)^2 / (2 * sd_val^2)) + size * log(sd_val * sqrt(2 * pi)))
     return(neglog)
   }
   cov <- index1:index2
   newknots <- knots[knots < index2 & knots > index1]
-  fit <- tryCatch(lm(data ~ ns(cov, knots = newknots, intercept = TRUE)),
-                  error = function(e) NULL)
-  if (is.null(fit)) return(Inf)
+  fit <- tryCatch(
+    lm(data ~ splines::ns(
+      cov, knots = newknots, intercept = TRUE
+    )),
+    error = function(e)
+      NULL
+  )
+  if (is.null(fit))
+    return(Inf)
   mu_val <- fit$fitted.values
   sd_val <- sd(data - mu_val, na.rm = TRUE)
-  if (sd_val <= 1e-5) return(0)
+  if (sd_val <= 1e-5)
+    return(0)
   neglog <- 2 * (sum((data - mu_val)^2 / (2 * sd_val^2)) + size * log(sd_val * sqrt(2 * pi)))
   return(neglog)
 }
@@ -625,14 +948,15 @@ winn <- function(data,
 if (interactive()) {
   library(testthat)
   
-  test_that("normalize_by_dilution_factor works (with and without control samples)", {
-    set.seed(1)
-    mat <- matrix(rnorm(100, mean = 100, sd = 15), nrow = 10)
-    res1 <- normalize_by_dilution_factor(mat)
-    res2 <- normalize_by_dilution_factor(mat, control_samples = 1:5)
-    expect_equal(dim(res1), dim(mat))
-    expect_equal(dim(res2), dim(mat))
-  })
+  test_that("normalize_by_dilution_factor works (with and without control samples)",
+            {
+              set.seed(1)
+              mat <- matrix(rnorm(100, mean = 100, sd = 15), nrow = 10)
+              res1 <- normalize_by_dilution_factor(mat)
+              res2 <- normalize_by_dilution_factor(mat, control_samples = 1:5)
+              expect_equal(dim(res1), dim(mat))
+              expect_equal(dim(res2), dim(mat))
+            })
   
   test_that("winn works with auto-detected batch", {
     set.seed(1)
@@ -656,7 +980,13 @@ if (interactive()) {
     batch <- rep(1:4, each = 5)
     run_order <- seq_len(ncol(mat))
     control_samples <- 1:4
-    res <- winn(mat, batch = batch, run_order = run_order, control_samples = control_samples, parameters = "auto")
+    res <- winn(
+      mat,
+      batch = batch,
+      run_order = run_order,
+      control_samples = control_samples,
+      parameters = "auto"
+    )
     expect_equal(dim(res), dim(mat))
     # Optionally, one might test that the mean correlation among controls is above a minimal threshold.
   })

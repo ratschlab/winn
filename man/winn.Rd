@@ -13,10 +13,12 @@ winn(
   fdr_threshold = 0.05,
   median_adjustment = "shrink",
   detrend_non_autocorrelated = "mean",
+  spline_method = "conservative",
   remove_batch_effects = "anova",
   test = "Ljung-Box",
   lag = 20,
-  scale_by_batch = FALSE
+  scale_by_batch = FALSE,
+  pelt_penalty = NULL
 )
 }
 \arguments{
@@ -37,6 +39,8 @@ these will be used for normalization and parameter tuning.}
 
 \item{detrend_non_autocorrelated}{A character string specifying the method for detrending non-autocorrelated metabolites ("mean" or "spline").}
 
+\item{spline_method}{A character string specifying the spline method when detrend="spline" ("conservative" for robust drift removal or "standard" for traditional approach).}
+
 \item{remove_batch_effects}{A character string specifying the method for removing batch effects ("anova" or "combat").}
 
 \item{test}{A character string specifying the autocorrelation test ("Ljung-Box" or "DW").}
@@ -44,6 +48,8 @@ these will be used for normalization and parameter tuning.}
 \item{lag}{An integer specifying the lag for the autocorrelation test.}
 
 \item{scale_by_batch}{Logical indicating whether to scale data by batch after corrections.}
+
+\item{pelt_penalty}{Optional numeric penalty for fkPELT segmentation. If NULL, a penalty based on sample size is used.}
 }
 \value{
 A numeric matrix of corrected intensities.
@@ -62,9 +68,10 @@ The correction pipeline is as follows:
   \item Optional scaling by batch.
 }
 
-When control samples are provided, the function can also auto-detect the optimal parameter settings (for batch detection,
-autocorrelation test type and FDR threshold, ANOVA FDR threshold, and scaling) by selecting the combination that maximizes
-the mean correlation between control samples.
+When control samples are provided and parameters="auto", the function performs comprehensive parameter
+optimization by testing multiple combinations of settings and selecting those that maximize control sample
+correlation while minimizing coefficient of variation. This includes optimization of spline methods,
+FDR thresholds, normalization approaches, and scaling options.
 }
 \examples{
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)

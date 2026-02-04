@@ -11,7 +11,8 @@ autocorrelation_correct(
   lag = 20,
   test = "Ljung-Box",
   detrend = "mean",
-  fdr_threshold = 0.05
+  fdr_threshold = 0.05,
+  spline_method = "conservative"
 )
 }
 \arguments{
@@ -28,6 +29,8 @@ autocorrelation_correct(
 \item{detrend}{A character string indicating the method for detrending ("mean" or "spline").}
 
 \item{fdr_threshold}{A numeric value specifying the FDR threshold for significance.}
+
+\item{spline_method}{A character string specifying the spline method when detrend="spline" ("conservative" or "standard").}
 }
 \value{
 A numeric matrix with drift corrected.

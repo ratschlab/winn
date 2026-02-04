@@ -113,6 +113,15 @@ adjust_outliers_mad <- function(data) {
   return(adjusted_data)
 }
 
+# ---- internal: correct inverse for log1p ----
+.inv_log1p <- function(z, clamp_nonneg = TRUE) {
+  x <- expm1(z)
+  if (clamp_nonneg) {
+    x <- pmax(x, 0)
+  }
+  x
+}
+
 #' Correct for Drift in Data Using Autocorrelation Correction
 #'
 #' This function corrects for drift effects in metabolomics data by detrending based on run order within each batch segment.
@@ -150,18 +159,16 @@ autocorrelation_correct <- function(data,
   }
   
   detrended_data <- data
-  unique_batch <- unique(batch)
+  batch_vec <- batch
+  unique_batch <- unique(batch_vec)
   
-  for (batch in unique_batch) {
-    idx <- which(batch == batch)
+  for (b in unique_batch) {
+    idx <- which(batch_vec == b)
     segment <- data[, idx, drop = FALSE]
-    seg_run <- if (!is.null(run_order))
-      run_order[idx]
-    else
-      seq_along(idx)
+    seg_run <- if (!is.null(run_order)) run_order[idx] else seq_along(idx)
     if (detrend == "spline") {
       spline_vals <- apply(segment, 1, function(x) {
-        log_seg <- log(x + 1)
+        log_seg <- log1p(x)
         if (spline_method == "conservative") {
           fit <- .fit_conservative_spline(log_seg, seg_run)
         } else {
@@ -176,7 +183,8 @@ autocorrelation_correct <- function(data,
         else
           (fit$fitted.values - mean(fit$fitted.values))
       })
-      detrended_data[, idx] <- exp(log(data[, idx] + 1) - t(spline_vals))
+      z <- log1p(data[, idx, drop = FALSE]) - t(spline_vals)
+      detrended_data[, idx] <- .inv_log1p(z, clamp_nonneg = TRUE)
     } else if (detrend == "mean") {
       p_vals <- apply(segment, 1, function(x) {
         if (test == "Ljung-Box") {
@@ -186,6 +194,9 @@ autocorrelation_correct <- function(data,
               NA
           )
         } else if (test == "DW") {
+          if (!requireNamespace("lmtest", quietly = TRUE)) {
+            stop("Package 'lmtest' is required for DW test. Please install it.")
+          }
           tryCatch(
             lmtest::dwtest(x ~ seg_run)$p.value,
             error = function(e)
@@ -199,7 +210,7 @@ autocorrelation_correct <- function(data,
       correct_ids <- which(p_vals < fdr_threshold)
       if (length(correct_ids) > 0) {
         spline_vals <- apply(segment[correct_ids, , drop = FALSE], 1, function(x) {
-          log_seg <- log(x + 1)
+          log_seg <- log1p(x)
           if (spline_method == "conservative") {
             fit <- .fit_conservative_spline(log_seg, seg_run)
           } else {
@@ -214,8 +225,8 @@ autocorrelation_correct <- function(data,
           else
             (fit$fitted.values - mean(fit$fitted.values))
         })
-        detrended_data[correct_ids, idx] <- exp(log(data[correct_ids, idx] +
-                                                      1) - t(spline_vals))
+        z <- log1p(data[correct_ids, idx, drop = FALSE]) - t(spline_vals)
+        detrended_data[correct_ids, idx] <- .inv_log1p(z, clamp_nonneg = TRUE)
       }
       non_correct_ids <- setdiff(seq_len(nrow(data)), correct_ids)
       if (length(non_correct_ids) > 0) {
@@ -253,29 +264,29 @@ anova_batch_correction <- function(data, batch, fdr_threshold = 0.05) {
     message("Only one batch detected. Skipping ANOVA-based correction.")
     return(data)
   }
-  data <- log(data + 1)
-  n_met <- nrow(data)
+  z <- log1p(data)
+  n_met <- nrow(z)
   pvals <- numeric(n_met)
   for (i in seq_len(n_met)) {
-    df <- data.frame(value = data[i, ], batch = batch)
+    df <- data.frame(value = z[i, ], batch = batch)
     a <- aov(value ~ batch, data = df)
     pvals[i] <- summary(a)[[1]]$`Pr(>F)`[1]
   }
   padj <- p.adjust(pvals, method = "fdr")
   
-  corrected <- data
+  corrected <- z
   sig <- which(padj < fdr_threshold)
   if (length(sig) > 0) {
-    overall_means <- rowMeans(data)
+    overall_means <- rowMeans(z, na.rm = TRUE)
     for (i in sig) {
       # compute batch-specific and overall means
-      batch_means <- tapply(data[i, ], batch, mean, na.rm = TRUE)
+      batch_means <- tapply(z[i, ], batch, mean, na.rm = TRUE)
       shift <- batch_means - overall_means[i]
       # subtract the shift for each sample
-      corrected[i, ] <- data[i, ] - shift[as.character(batch)]
+      corrected[i, ] <- z[i, ] - shift[as.character(batch)]
     }
   }
-  return(exp(corrected))
+  return(.inv_log1p(corrected, clamp_nonneg = TRUE))
 }
 
 #' Perform ComBat Batch Correction by batch
@@ -313,20 +324,20 @@ combat_batch_correction <- function(data,
     message("Only one batch detected. Skipping ComBat-based correction.")
     return(data)
   }
-  data <- log(data + 1)
+  z <- log1p(data)
   # design matrix with intercept only to preserve global mean
   mod <- model.matrix( ~ 1, data = data.frame(batch = batch))
   
   # apply ComBat
   corrected <- sva::ComBat(
-    dat = data,
+    dat = z,
     batch = batch,
     mod = mod,
     par.prior = par_prior,
     mean.only = mean_only,
     ref.batch = ref_batch
   )
-  return(exp(corrected))
+  return(.inv_log1p(corrected, clamp_nonneg = TRUE))
 }
 
 
@@ -351,9 +362,10 @@ scale_by_batch <- function(data, batch) {
   }
   
   scaled_data <- data
-  unique_batch <- unique(batch)
-  for (batch in unique_batch) {
-    idx <- which(batch == batch)
+  batch_vec <- batch
+  unique_batch <- unique(batch_vec)
+  for (b in unique_batch) {
+    idx <- which(batch_vec == b)
     row_means <- rowMeans(data[, idx, drop = FALSE], na.rm = TRUE)
     row_sds <- apply(data[, idx, drop = FALSE], 1, sd, na.rm = TRUE)
     # Avoid division by zero by setting zero standard deviations to 1
@@ -396,6 +408,7 @@ scale_by_batch <- function(data, batch) {
 #' @param test A character string specifying the autocorrelation test ("Ljung-Box" or "DW").
 #' @param lag An integer specifying the lag for the autocorrelation test.
 #' @param scale_by_batch Logical indicating whether to scale data by batch after corrections.
+#' @param pelt_penalty Optional numeric penalty for fkPELT segmentation. If NULL, a penalty based on sample size is used.
 #' @return A numeric matrix of corrected intensities.
 #' @examples
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
@@ -415,7 +428,8 @@ winn <- function(data,
                  remove_batch_effects = "anova",
                  test = "Ljung-Box",
                  lag = 20,
-                 scale_by_batch = FALSE) {
+                 scale_by_batch = FALSE,
+                 pelt_penalty = NULL) {
   # Input validation
   if (!is.matrix(data) && !is.data.frame(data)) {
     stop("Data must be a matrix or data frame.")
@@ -475,6 +489,9 @@ winn <- function(data,
   if (lag <= 0 || lag != round(lag)) {
     stop("lag must be a positive integer.")
   }
+  if (!is.null(pelt_penalty) && (!is.numeric(pelt_penalty) || length(pelt_penalty) != 1)) {
+    stop("pelt_penalty must be a single numeric value or NULL.")
+  }
   
   message("Starting Winn correction...")
   
@@ -496,7 +513,11 @@ winn <- function(data,
     normalizations <- c("shrink", "normalize")
     acorr_fdr_options <- c(0.1, 0.05, 0.01)
     anova_fdr_options <- c(0.1, 0.05, 0.01)
-    scale_options <- c(TRUE, FALSE)
+    scale_options <- if (scale_by_batch) {
+      c(TRUE)
+    } else {
+      c(FALSE)
+    }
     spline_methods <- c("conservative", "standard")  # Add spline method optimization
     
     best_score <- -Inf
@@ -513,7 +534,7 @@ winn <- function(data,
       current_batch <- if (batch_option == "provided") {
         batch
       } else {
-        .auto_detect_batch(norm_data)
+        .auto_detect_batch(norm_data, pelt_penalty = pelt_penalty)
       }
       
       for (current_test in tests) {
@@ -542,9 +563,13 @@ winn <- function(data,
             for (anova_fdr in anova_fdr_options) {
               # Batch effect correction with current ANOVA FDR
               batch_corrected <- tryCatch({
-                anova_batch_correction(drift_corrected,
-                                       current_batch,
-                                       fdr_threshold = anova_fdr)
+                if (remove_batch_effects == "anova") {
+                  anova_batch_correction(drift_corrected,
+                                         current_batch,
+                                         fdr_threshold = anova_fdr)
+                } else {
+                  combat_batch_correction(drift_corrected, current_batch)
+                }
               }, error = function(e) {
                 return(NULL)
               })
@@ -645,7 +670,7 @@ winn <- function(data,
     # Use fixed parameters
     if (is.null(batch)) {
       message("No batch information provided. Auto-detecting segments using fkPELT...")
-      batch <- .auto_detect_batch(norm_data)
+      batch <- .auto_detect_batch(norm_data, pelt_penalty = pelt_penalty)
       message("Auto-detected ", max(batch), " segments as batch.")
     } else {
       if (length(batch) != n_samples) {
@@ -717,7 +742,7 @@ winn <- function(data,
 # Internal Helper Functions (not exported)
 ###############################################################################
 
-.auto_detect_batch <- function(data) {
+.auto_detect_batch <- function(data, pelt_penalty = NULL) {
   # Auto-detect segments as batch using fkPELT based on aggregated median signal
   agg_signal <- apply(data, 2, median, na.rm = TRUE)
   n <- length(agg_signal)
@@ -729,7 +754,7 @@ winn <- function(data,
   } else {
     knots <- numeric(0)
   }
-  change_points <- .fkPELT(agg_signal, knots)
+  change_points <- .fkPELT(agg_signal, knots, penalty = pelt_penalty)
   tau <- c(0, change_points, n)
   batch <- rep(NA, n)
   for (i in seq_along(tau[-length(tau)])) {
@@ -790,6 +815,9 @@ winn <- function(data,
 
 .fit_conservative_spline <- function(y, x) {
   # Conservative spline fitting with optimal parameters for drift removal
+  if (!requireNamespace("mgcv", quietly = TRUE)) {
+    stop("Package 'mgcv' is required for spline detrending. Please install it.")
+  }
   n <- length(y)
   
   # For very short segments, use linear regression
@@ -861,12 +889,17 @@ winn <- function(data,
   ))
 }
 
-.fkPELT <- function(data, knots) {
+.fkPELT <- function(data, knots, penalty = NULL) {
   if (is.null(data))
     stop("Data cannot be NULL in .fkPELT")
   n <- length(data)
-  penalty <- 3 * log(300) # 3*log(300) is the penalty constant that we use
-  # in the PELT algorithm. Inspired by BIC criterion but modified.
+  if (is.null(penalty)) {
+    penalty <- 3 * log(max(n, 2))
+  }
+  if (!is.numeric(penalty) || length(penalty) != 1 || penalty <= 0) {
+    stop("penalty must be a single positive numeric value.")
+  }
+  # penalty is inspired by BIC criterion but modified.
   f <- numeric(n + 1)
   f[1] <- -penalty
   cp <- vector("list", n + 1)
@@ -925,6 +958,9 @@ winn <- function(data,
   }
   cov <- index1:index2
   newknots <- knots[knots < index2 & knots > index1]
+  if (!requireNamespace("splines", quietly = TRUE)) {
+    stop("Package 'splines' is required for .fksplinecost. Please install it.")
+  }
   fit <- tryCatch(
     lm(data ~ splines::ns(
       cov, knots = newknots, intercept = TRUE

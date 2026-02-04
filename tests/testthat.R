@@ -7,6 +7,6 @@
 # * https://testthat.r-lib.org/articles/special-files.html
 
 library(testthat)
-library(Winn)
+library(winn)
 
-test_check("Winn")
+test_check("winn")

@@ -13,10 +13,14 @@ Imports:
     sva
 Suggests:
     testthat (>= 3.0.0),
-    roxygen2
+    roxygen2,
+    knitr,
+    rmarkdown,
+    ggplot2
 License: GPL-3
 Encoding: UTF-8
 LazyData: true
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3
+VignetteBuilder: knitr
 Config/testthat/edition: 3
 Additional_repositories: https://bioconductor.org/packages/release/bioc

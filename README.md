@@ -167,8 +167,3 @@ Demler O, Giulianini F, MacFarlane C, Tanna T, and collaborators (2024).
 "WiNNbeta: Batch and drift correction method by white noise normalization for
 metabolomic studies." arXiv preprint, arXiv:2404.07906.
 
-An earlier public WiNN summary is:
-
-Demler O, Giulianini F, MacFarlane C, Tanna T, and collaborators (2020).
-"White Noise Normalization (WiNN) in Metabolomics Studies."
-F1000Research Poster 9:1394. <doi:10.7490/f1000research.1118070.1>.

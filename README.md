@@ -1,134 +1,174 @@
-# winn — White Noise Normalization for Metabolomics
+# winn
 
-**winn** is an R package for correcting technical artifacts in LC‑MS/GC‑MS metabolomics. It is designed to be practical, transparent, and robust: each correction step is explicit and can be switched on/off. The core function, `winn()`, applies a multi‑step pipeline to reduce **drift**, **batch effects**, **outliers**, and **sample‑to‑sample dilution**, while preserving biological signal.
+`winn` implements White Noise Normalization for metabolomics LC-MS data. The
+package applies a decision-guided correction pipeline: each metabolite is first
+tested for serial dependence, and only metabolites that fail the white-noise
+gatekeeper are drift-corrected. This keeps stable features untouched while
+still correcting drift, batch structure, dilution effects, and outliers when
+they are present.
 
-This package was built for real-world workflows where run order, batch structure, and QC samples are available but noisy. It works well on both targeted and untargeted datasets.
-
----
-
-## What WINN Does (High‑Level)
-
-For a data matrix of **metabolites × samples**:
-
-1. **Outlier adjustment** using a robust MAD rule (per metabolite).
-2. **Drift correction** using autocorrelation‑guided detrending by run order (per batch/segment).
-3. **Batch correction** with either ANOVA mean‑shift or ComBat (log1p space).
-4. **Median/PQN adjustment** to correct dilution or global scaling.
-5. **Optional per‑batch scaling** (z‑score within batch).
-
-If batch labels are not provided, WINN can **auto‑detect batch segments** using an fkPELT change‑point approach on the median sample signal.
-
----
+The package supports both QC-informed tuning and QC-agnostic workflows. If
+batch labels are unavailable, `winn()` can infer batch-like segments with an
+fkPELT-style change-point routine before downstream correction.
 
 ## Installation
 
-```r
-# CRAN dependencies
-install.packages(c("mgcv", "lmtest"))
+The current release is installed from GitHub. The package imports the
+Bioconductor package `sva` for the ComBat correction path.
 
-# Bioconductor dependency for ComBat
+```r
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
 }
 BiocManager::install("sva")
 
-# Install winn from GitHub
-# devtools::install_github("ratschlab/winn")
+if (!requireNamespace("remotes", quietly = TRUE)) {
+  install.packages("remotes")
+}
+remotes::install_github("ratschlab/winn")
 ```
 
-If you do not plan to use ComBat, you can skip the `sva` installation and use `remove_batch_effects = "anova"`.
+After a CRAN release is published, `install.packages("winn")` will also work.
 
----
+## Reproducible Example
 
-## Quick Start
+The example below creates a small simulated dataset and runs the standard WiNN
+wrapper with fixed parameters. It is intentionally lightweight and matches the
+current exported API.
 
 ```r
 library(winn)
 
-# data: metabolites x samples
-# batch: length = ncol(data)
-# run_order: length = ncol(data)
+set.seed(1)
 
-corrected <- winn(
-  data,
-  batch = batch,
-  run_order = run_order,
-  median_adjustment = "shrink",
-  remove_batch_effects = "anova"
-)
-```
+n_met <- 20L
+n_samples <- 48L
+batch <- rep(seq_len(4), each = 12)
+run_order <- seq_len(n_samples)
+qc_idx <- seq(4, n_samples, by = 8)
+study_idx <- setdiff(seq_len(n_samples), qc_idx)
 
-### With QC-based auto parameter selection
-If you have pooled QC samples, WINN can tune parameters automatically to maximize QC consistency and reduce variability.
+base_log <- matrix(rnorm(n_met * n_samples, mean = 8, sd = 0.15), nrow = n_met)
+true_log <- base_log
 
-```r
-qc_idx <- c(5, 15, 25, 35)  # column indices of QC samples
+signal_metabolites <- 1:4
+study_signal <- as.numeric(scale(sin(study_idx / 6) + rnorm(length(study_idx), sd = 0.2)))
+true_log[signal_metabolites, study_idx] <- true_log[signal_metabolites, study_idx] +
+  0.35 * matrix(
+    study_signal,
+    nrow = length(signal_metabolites),
+    ncol = length(study_idx),
+    byrow = TRUE
+  )
 
-corrected_auto <- winn(
-  data,
+pooled_qc <- rowMeans(true_log[, study_idx, drop = FALSE])
+true_log[, qc_idx] <- pooled_qc
+
+dilution <- exp(rnorm(n_samples, sd = 0.05))
+drift <- rep(seq(-0.18, 0.18, length.out = 12), times = 4)
+batch_shift <- rep(c(-0.12, 0.04, 0.10, -0.06), each = 12)
+noise <- matrix(rnorm(n_met * n_samples, sd = 0.08), nrow = n_met)
+
+observed_log <- true_log +
+  matrix(log(dilution), nrow = n_met, ncol = n_samples, byrow = TRUE) +
+  matrix(drift + batch_shift, nrow = n_met, ncol = n_samples, byrow = TRUE) +
+  noise
+
+observed_intensity <- pmax(expm1(observed_log), 0)
+
+corrected_intensity <- winn(
+  observed_intensity,
   batch = batch,
   run_order = run_order,
   control_samples = qc_idx,
-  parameters = "auto"
+  parameters = "fixed",
+  remove_batch_effects = "anova",
+  median_adjustment = "shrink",
+  lag = NULL,
+  scale_by_batch = FALSE
+)
+
+dim(corrected_intensity)
+```
+
+## Stepwise Pipeline
+
+Each correction step is also available as a standalone function.
+
+```r
+step1 <- adjust_outliers_mad(observed_intensity)
+
+step2 <- autocorrelation_correct(
+  step1,
+  run_order = run_order,
+  batch = batch,
+  lag = NULL,
+  test = "Ljung-Box",
+  detrend = "mean"
+)
+
+step3 <- anova_batch_correction(step2, batch = batch)
+
+step4 <- normalize_by_dilution_factor(
+  step3,
+  processing = "shrink",
+  control_samples = qc_idx
+)
+
+step5 <- scale_by_batch(step4, batch = batch)  # optional
+```
+
+When pooled QCs are available and you want the package to search across
+parameter settings, use `parameters = "auto"`. That mode is slower because it
+evaluates multiple combinations using the package's QC quality score.
+
+```r
+corrected_auto <- winn(
+  observed_intensity,
+  batch = batch,
+  run_order = run_order,
+  control_samples = qc_idx,
+  parameters = "auto",
+  lag = NULL,
+  scale_by_batch = FALSE
 )
 ```
 
----
+If batch labels are missing, set `batch = NULL` and provide `run_order` so WiNN
+can segment the run automatically.
 
-## Recommended Workflow
+```r
+corrected_qc_agnostic <- winn(
+  observed_intensity,
+  batch = NULL,
+  run_order = run_order,
+  lag = NULL,
+  pelt_penalty = "mbic"
+)
+```
 
-1. **Provide batch + run order** if known.
-2. **Use QC samples** and `parameters = "auto"` whenever possible.
-3. Inspect QC consistency before/after (CV, correlation).
-4. If results appear over‑corrected, relax `fdr_threshold` or disable scaling.
+## Practical Notes
 
----
-
-## Key Parameters (Practical Guide)
-
-- `remove_batch_effects = "anova"` (default): fast and conservative mean‑shift correction.
-- `remove_batch_effects = "combat"`: stronger correction, needs `sva`; best when batch effects dominate.
-- `median_adjustment = "shrink"`: mild dilution correction; good default.
-- `median_adjustment = "normalize"`: full PQN; can be more aggressive.
-- `scale_by_batch = TRUE`: z‑scores within batch; use cautiously if absolute levels matter.
-- `pelt_penalty`: optional override for auto batch segmentation (higher = fewer segments).
-
----
-
-## Interpretation and Limitations
-
-WINN is meant to correct **technical artifacts** while preserving biological variation. However:
-
-- If run order correlates with phenotype, drift correction can remove true biology.
-- If batch is confounded with biological groups, ComBat or ANOVA can dampen real effects.
-- Over‑aggressive scaling may erase absolute concentration information.
-
-For these reasons, **diagnostic checks (QC CV, correlation, PCA)** should be part of every analysis.
-
----
-
-## Tutorial
-
-A full tutorial with simulated drift + batch effects is available in the vignette:
-
-- `vignettes/winn_tutorial.Rmd`
-
-It demonstrates QC‑based auto parameter selection and provides quantitative metrics for signal preservation.
-
----
+- Use `lag = NULL` unless you have a study-specific reason to force a fixed
+  Ljung-Box lag.
+- Use `remove_batch_effects = "anova"` for a lightweight mean-only correction;
+  switch to `remove_batch_effects = "combat"` when you want empirical Bayes
+  adjustment and `sva` is available.
+- Keep `scale_by_batch = FALSE` when absolute abundance differences matter for
+  downstream interpretation.
+- The vignette provides a larger end-to-end example:
+  `vignette("winn_tutorial", package = "winn")`.
 
 ## Citation
 
-If you use WINN in a manuscript, please cite the GitHub repository and include the package version used. A formal paper citation can be added once available.
+If you use `winn`, cite the WiNN method paper:
 
----
+Demler O, Giulianini F, MacFarlane C, Tanna T, and collaborators (2024).
+"WiNNbeta: Batch and drift correction method by white noise normalization for
+metabolomic studies." arXiv preprint, arXiv:2404.07906.
 
-## License
+An earlier public WiNN summary is:
 
-GPL‑3
-
----
-
-## Contact
-
-Issues and suggestions are welcome via GitHub.
+Demler O, Giulianini F, MacFarlane C, Tanna T, and collaborators (2020).
+"White Noise Normalization (WiNN) in Metabolomics Studies."
+F1000Research Poster 9:1394. <doi:10.7490/f1000research.1118070.1>.

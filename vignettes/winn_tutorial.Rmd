@@ -1,273 +1,272 @@
 ---
-title: "WINN Tutorial: Drift and Batch Correction in LC-MS"
+title: "WiNN Tutorial: A Reproducible LC-MS Example"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{WINN Tutorial: Drift and Batch Correction in LC-MS}
+  %\VignetteIndexEntry{WiNN Tutorial: A Reproducible LC-MS Example}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 4,
+  message = FALSE,
+  warning = FALSE
+)
+
+library(winn)
 ```
 
-This tutorial demonstrates **WINN** on simulated LC-MS data with known drift and batch effects. The goal is to show how WINN corrects technical artifacts **while preserving biological signal**.
+This vignette runs a single, fully reproducible WiNN workflow on simulated LC-MS
+data. Every object is created inside the document, so the example can be rerun
+unchanged during `R CMD check`. To keep the vignette lightweight, it uses only
+base R plus `winn`, avoids slow parameter-grid searches, and focuses on a
+single before/after comparison.
 
-We keep dependencies minimal and use only base R and the `winn` package.
+## 1. Simulate a small LC-MS dataset
 
-## 1. Simulate LC-MS data
-
-We simulate 50 metabolites measured across 200 samples, split into 4 batches. Every 8th measurement is a **QC sample** (pooled reference), so **all QC measurements should be essentially the same** in the baseline (true) signal. A subset of metabolites carries a true biological effect (group A vs B) in *non-QC* samples. We also simulate **sample‑wise dilution** (a realistic technical effect), then add drift, batch shifts, and noise.
+We simulate 30 metabolites measured across 96 injections. Every eighth
+injection is a pooled QC sample, so QC values should be close after technical
+correction. The observed matrix includes dilution, drift, batch shifts, and
+random noise layered on top of a known ground-truth signal.
 
 ```{r simulate}
 set.seed(42)
 
-n_met <- 50
-n_samples <- 200
-n_batches <- 4
-samples_per_batch <- n_samples / n_batches
+n_met <- 30L
+n_samples <- 96L
+n_batches <- 4L
 
-batch <- rep(seq_len(n_batches), each = samples_per_batch)
+batch <- rep(seq_len(n_batches), each = n_samples / n_batches)
 run_order <- seq_len(n_samples)
+qc_idx <- seq(4, n_samples, by = 8)
+study_idx <- setdiff(seq_len(n_samples), qc_idx)
 
-qc_idx <- seq(1, n_samples, by = 8)
-non_qc_idx <- setdiff(seq_len(n_samples), qc_idx)
+base_mean <- rnorm(n_met, mean = 7.8, sd = 0.35)
+true_log <- base_mean + matrix(rnorm(n_met * n_samples, sd = 0.08), nrow = n_met)
 
-# Randomize biological groups along measurement order (QC excluded),
-# with equal A/B counts **within each batch**
-group <- rep(NA_character_, n_samples)
-group[qc_idx] <- "QC"
-for (b in seq_len(n_batches)) {
-  idx_b <- which(batch == b)
-  non_qc_b <- intersect(idx_b, non_qc_idx)
-  n_b <- length(non_qc_b)
-  labels <- rep(c("A", "B"), length.out = n_b)
-  group[non_qc_b] <- sample(labels)
+signal_metabolites <- 1:6
+study_signal <- as.numeric(scale(sin(study_idx / 9) + rnorm(length(study_idx), sd = 0.2)))
+true_log[signal_metabolites, study_idx] <- true_log[signal_metabolites, study_idx] +
+  0.30 * matrix(
+    study_signal,
+    nrow = length(signal_metabolites),
+    ncol = length(study_idx),
+    byrow = TRUE
+  )
+
+covariate_metabolites <- 7:10
+continuous_covariate <- numeric(n_samples)
+continuous_covariate[study_idx] <- as.numeric(scale(runif(length(study_idx))))
+true_log[covariate_metabolites, ] <- true_log[covariate_metabolites, ] +
+  0.20 * matrix(
+    continuous_covariate,
+    nrow = length(covariate_metabolites),
+    ncol = n_samples,
+    byrow = TRUE
+  )
+
+pooled_qc <- rowMeans(true_log[, study_idx, drop = FALSE])
+true_log[, qc_idx] <- pooled_qc
+
+make_batch_drift <- function(n, amplitude) {
+  x <- seq(0, 1, length.out = n)
+  amplitude * (0.8 * x - 0.6 * x^2 + 0.15 * sin(2 * pi * x))
 }
 
-# True log-scale signal
-baseline_log <- matrix(rnorm(n_met * n_samples, mean = 8, sd = 0.5), nrow = n_met)
-
-# Biological effect on 10 metabolites (non-QC samples only).
-# This is the *true* biological signal and is added before drift/batch/noise.
-true_effect <- c(rep(0.8, 10), rep(0, n_met - 10))
-true_log <- baseline_log
-true_log[, group == "B"] <- true_log[, group == "B"] + true_effect
-
-# QC samples: pooled reference (same baseline across QC samples)
-pooled_log <- rowMeans(true_log[, group != "QC", drop = FALSE])
-true_log[, qc_idx] <- pooled_log
-
-# Add sample-wise dilution (multiplicative, technical artifact)
-dilution_factor <- exp(rnorm(n_samples, mean = 0, sd = 0.12))
-
-# Add drift per batch (realistic: warm-up → stable → mild decline, with non-linear curvature)
-smoothstep <- function(x) {
-  x <- pmin(pmax(x, 0), 1)
-  x * x * (3 - 2 * x)
-}
-
-make_batch_drift <- function(n, shape = c("linearish", "nonlinear")) {
-  shape <- match.arg(shape)
-  # Piecewise structure: warm-up, plateau, decline
-  n1 <- floor(n * 0.30)
-  n2 <- floor(n * 0.45)
-  n3 <- n - n1 - n2
-
-  up <- smoothstep(seq(0, 1, length.out = n1))
-  flat <- rep(1, n2)
-  down <- 1 - smoothstep(seq(0, 1, length.out = n3))
-  base <- c(up, flat, down)
-
-  # Add non-linear curvature and small random walk (instrument instability)
-  curve_strength <- ifelse(shape == "nonlinear", 0.15, 0.06)
-  curve <- curve_strength * (seq_len(n) / n - 0.5)^2
-  rw <- cumsum(rnorm(n, mean = 0, sd = ifelse(shape == "nonlinear", 0.012, 0.008)))
-  base <- base + curve + rw
-
-  # Re-center to keep drift around 0..1
-  base <- base - min(base)
-  base <- base / max(base)
-  base
-}
-
-drift_log <- matrix(0, nrow = n_met, ncol = n_samples)
-amp <- rnorm(n_met, mean = 0.18, sd = 0.06)
+batch_drift <- numeric(n_samples)
+drift_amplitude <- c(0.22, 0.14, 0.18, 0.10)
 for (b in seq_len(n_batches)) {
   idx <- which(batch == b)
-  shape <- ifelse(b %% 2 == 0, "nonlinear", "linearish")
-  trend_b <- make_batch_drift(length(idx), shape = shape)
-  drift_log[, idx] <- amp %*% t(trend_b)
+  batch_drift[idx] <- make_batch_drift(length(idx), drift_amplitude[b])
 }
 
-# Add batch effects (additive shift + multiplicative scale on log scale)
-batch_shift <- c(-0.4, 0.0, 0.3, 0.6)
-batch_scale <- c(1.0, 1.1, 0.9, 1.2)
+metabolite_drift_scale <- matrix(
+  0.05 + 0.25 * runif(n_met),
+  nrow = n_met,
+  ncol = n_samples
+)
+drift_log <- matrix(batch_drift, nrow = n_met, ncol = n_samples, byrow = TRUE) *
+  metabolite_drift_scale
 
-batch_log <- matrix(0, nrow = n_met, ncol = n_samples)
+batch_shift <- matrix(0, nrow = n_met, ncol = n_samples)
+batch_centers <- c(-0.18, 0.05, 0.12, -0.08)
 for (b in seq_len(n_batches)) {
   idx <- which(batch == b)
-  batch_log[, idx] <- batch_shift[b] + log(batch_scale[b])
+  batch_shift[, idx] <- rnorm(n_met, mean = batch_centers[b], sd = 0.04)
 }
 
-# Add noise
-noise_log <- matrix(rnorm(n_met * n_samples, mean = 0, sd = 0.2), nrow = n_met)
+dilution_factor <- exp(rnorm(n_samples, sd = 0.06))
+noise_log <- matrix(rnorm(n_met * n_samples, sd = 0.08), nrow = n_met)
 
-# Observed data in intensity space
 observed_log <- true_log +
   matrix(log(dilution_factor), nrow = n_met, ncol = n_samples, byrow = TRUE) +
   drift_log +
-  batch_log +
+  batch_shift +
   noise_log
+
 true_intensity <- pmax(expm1(true_log), 0)
 observed_intensity <- pmax(expm1(observed_log), 0)
 ```
 
-## 2. Run WINN with fixed parameters, QC auto‑selection, and auto batch detection
+## 2. Run WiNN
 
-We compare:
+For a vignette, fixed settings are the most practical choice because they are
+fast and deterministic. The auto-tuning mode is still available for full
+analyses when you want QC-guided parameter selection.
 
-1. **Fixed parameters** (no QC guidance).
-2. **QC-based auto parameter selection** using `control_samples`.
-3. **Auto batch detection** (omit `batch`, let fkPELT segment the run).
-
-```{r run-winn, message=TRUE}
-library(winn)
-
-winn_fixed <- winn(
-  observed_intensity,
-  batch = batch,
-  run_order = run_order,
-  median_adjustment = "shrink",
-  remove_batch_effects = "anova",
-  scale_by_batch = FALSE
-)
-
-winn_qc_auto <- winn(
+```{r run-winn}
+corrected_intensity <- winn(
   observed_intensity,
   batch = batch,
   run_order = run_order,
   control_samples = qc_idx,
-  parameters = "auto",
-  scale_by_batch = FALSE
-)
-
-winn_auto_batch <- winn(
-  observed_intensity,
-  batch = NULL,
-  run_order = run_order,
-  control_samples = qc_idx,
-  parameters = "auto",
+  parameters = "fixed",
+  fdr_threshold = 0.05,
   median_adjustment = "shrink",
   remove_batch_effects = "anova",
+  lag = NULL,
   scale_by_batch = FALSE
 )
 ```
 
-## 3. Evaluate signal preservation
+## 3. Summarize agreement with the known truth
 
-We compare corrected data to the **true signal** using:
+We use three metrics:
 
-- Mean per‑metabolite correlation with truth
-- RMSE versus truth
-- Preservation of group effect sizes (A vs B) on log1p scale (QC excluded)
-- QC consistency (mean QC CV)
+- Mean per-metabolite Pearson correlation on the `log1p` scale
+- Mean per-metabolite ICC(A,1) on the `log1p` scale
+- Mean QC coefficient of variation (QC-CV) on the intensity scale
+
+Higher Pearson and ICC indicate stronger agreement with the ground-truth
+profiles. Lower QC-CV indicates tighter pooled controls.
 
 ```{r metrics}
-calc_metrics <- function(x, truth, group, qc_idx) {
-  # Correlation per metabolite
-  cor_vals <- sapply(seq_len(nrow(x)), function(i) {
-    cor(x[i, ], truth[i, ], use = "pairwise.complete.obs")
-  })
-  mean_cor <- mean(cor_vals, na.rm = TRUE)
-
-  # RMSE
-  rmse <- sqrt(mean((x - truth)^2, na.rm = TRUE))
-
-  # Effect size preservation on log1p scale
-  x_log <- log1p(x)
-  t_log <- log1p(truth)
-  est_effect <- rowMeans(x_log[, group == "B", drop = FALSE]) -
-    rowMeans(x_log[, group == "A", drop = FALSE])
-  true_effect <- rowMeans(t_log[, group == "B", drop = FALSE]) -
-    rowMeans(t_log[, group == "A", drop = FALSE])
-
-  effect_cor <- cor(est_effect, true_effect, use = "pairwise.complete.obs")
-  effect_rmse <- sqrt(mean((est_effect - true_effect)^2, na.rm = TRUE))
-
-  # QC consistency metric (CV only)
-  qc_log <- x_log[, qc_idx, drop = FALSE]
-  qc_cvs <- apply(qc_log, 1, function(v) {
+mean_qc_cv <- function(x, qc_samples) {
+  qc_values <- x[, qc_samples, drop = FALSE]
+  qc_cvs <- apply(qc_values, 1, function(v) {
     mu <- mean(v, na.rm = TRUE)
-    if (mu == 0) return(NA_real_)
+    if (!is.finite(mu) || abs(mu) < .Machine$double.eps) {
+      return(NA_real_)
+    }
     sd(v, na.rm = TRUE) / abs(mu)
   })
-  qc_mean_cv <- mean(qc_cvs, na.rm = TRUE)
+  mean(qc_cvs, na.rm = TRUE)
+}
+
+icc_a1 <- function(reference, candidate) {
+  keep <- is.finite(reference) & is.finite(candidate)
+  reference <- reference[keep]
+  candidate <- candidate[keep]
+  n <- length(reference)
+  k <- 2L
+
+  if (n < 2L) {
+    return(NA_real_)
+  }
+
+  ratings <- cbind(reference, candidate)
+  grand_mean <- mean(ratings)
+  row_means <- rowMeans(ratings)
+  col_means <- colMeans(ratings)
+
+  ss_rows <- k * sum((row_means - grand_mean)^2)
+  ss_cols <- n * sum((col_means - grand_mean)^2)
+  ss_total <- sum((ratings - grand_mean)^2)
+  ss_error <- ss_total - ss_rows - ss_cols
+
+  ms_rows <- ss_rows / (n - 1)
+  ms_cols <- ss_cols / (k - 1)
+  ms_error <- ss_error / ((n - 1) * (k - 1))
+
+  denom <- ms_rows + (k - 1) * ms_error + (k * (ms_cols - ms_error) / n)
+  if (!is.finite(denom) || denom <= 0) {
+    return(NA_real_)
+  }
+
+  (ms_rows - ms_error) / denom
+}
+
+calc_metrics <- function(candidate, truth, qc_samples) {
+  candidate_log <- log1p(candidate)
+  truth_log <- log1p(truth)
+
+  pearson_vals <- vapply(seq_len(nrow(candidate)), function(i) {
+    cor(candidate_log[i, ], truth_log[i, ], use = "pairwise.complete.obs")
+  }, numeric(1))
+
+  icc_vals <- vapply(seq_len(nrow(candidate)), function(i) {
+    icc_a1(truth_log[i, ], candidate_log[i, ])
+  }, numeric(1))
 
   data.frame(
-    mean_cor = mean_cor,
-    rmse = rmse,
-    effect_cor = effect_cor,
-    effect_rmse = effect_rmse,
-    qc_mean_cv = qc_mean_cv
+    mean_pearson = mean(pearson_vals, na.rm = TRUE),
+    mean_icc = mean(icc_vals, na.rm = TRUE),
+    mean_qc_cv = mean_qc_cv(candidate, qc_samples)
   )
 }
 
-results <- rbind(
-  raw = calc_metrics(observed_intensity, true_intensity, group, qc_idx),
-  winn_fixed = calc_metrics(winn_fixed, true_intensity, group, qc_idx),
-  winn_qc_auto = calc_metrics(winn_qc_auto, true_intensity, group, qc_idx),
-  winn_auto_batch = calc_metrics(winn_auto_batch, true_intensity, group, qc_idx)
+summary_metrics <- rbind(
+  raw = calc_metrics(observed_intensity, true_intensity, qc_idx),
+  winn = calc_metrics(corrected_intensity, true_intensity, qc_idx)
 )
 
-results
+knitr::kable(
+  round(summary_metrics, 4),
+  caption = "Before/after metrics for the simulated dataset."
+)
 ```
 
-## 4. Example: drift removal on 5 metabolites
+On this simulated dataset, WiNN should increase agreement with the known truth
+while reducing pooled-QC variability.
 
-Below are five example metabolites showing the **true signal**, the **observed (drifted/batched)** signal, and the **WINN‑corrected** signal (QC auto mode). We plot **log1p intensity** to reduce heteroscedasticity (common in LC‑MS) and add a smooth trend to highlight drift.
+## 4. Visualize a few metabolites
 
-```{r plot, fig.width=8, fig.height=5}
-library(ggplot2)
+The plot below shows four representative metabolites. Grey traces are the
+observed measurements, dashed black traces are the true underlying signal, and
+blue traces are the WiNN-corrected values. Orange points mark pooled QC
+injections.
 
-set.seed(7)
-met_ids <- sort(sample(seq_len(n_met), 3))
+```{r plot, fig.height=6}
+met_ids <- c(1, 6, 9, 14)
+panel_breaks <- (n_samples / n_batches) * seq_len(n_batches - 1) + 0.5
 
-df_plot <- data.frame(
-  run_order = rep(run_order, times = 3 * length(met_ids)),
-  metabolite = factor(rep(met_ids, each = n_samples * 3)),
-  signal = rep(c("True", "Observed", "WINN (auto)"), each = n_samples, times = length(met_ids)),
-  intensity = c(
-    as.vector(t(true_intensity[met_ids, ])),
-    as.vector(t(observed_intensity[met_ids, ])),
-    as.vector(t(winn_auto_batch[met_ids, ]))
+op <- par(mfrow = c(2, 2), mar = c(3.5, 3.5, 2.5, 1))
+
+for (met in met_ids) {
+  y_raw <- log1p(observed_intensity[met, ])
+  y_true <- log1p(true_intensity[met, ])
+  y_winn <- log1p(corrected_intensity[met, ])
+  y_lim <- range(c(y_raw, y_true, y_winn), finite = TRUE)
+
+  plot(
+    run_order,
+    y_raw,
+    type = "l",
+    col = "grey55",
+    lwd = 1,
+    ylim = y_lim,
+    xlab = "Run order",
+    ylab = "log1p(Intensity)",
+    main = paste("Metabolite", met)
   )
-)
+  abline(v = panel_breaks, lty = 3, col = "grey80")
+  lines(run_order, y_true, col = "black", lty = 2, lwd = 1.2)
+  lines(run_order, y_winn, col = "#1b6ca8", lwd = 1.4)
+  points(qc_idx, y_winn[qc_idx], pch = 16, cex = 0.6, col = "#d95f02")
+}
 
-df_plot$log1p_intensity <- log1p(df_plot$intensity)
-
-ggplot(df_plot, aes(x = run_order, y = log1p_intensity, color = signal)) +
-  geom_point(size = 0.7, alpha = 0.5) +
-  geom_smooth(se = FALSE, method = "loess", span = 0.25, linewidth = 0.7) +
-  facet_wrap(~ metabolite + signal, scales = "free_y", ncol = 3) +
-  scale_color_manual(values = c("True" = "#2c7fb8", "Observed" = "#636363", "WINN (auto)" = "#d95f0e")) +
-  labs(
-    title = "Three Example Metabolites: True vs Observed vs WINN-corrected",
-    x = "Run order",
-    y = "log1p(Intensity)",
-    color = NULL
-  ) +
-  theme_bw(base_size = 11) +
-  theme(
-    legend.position = "top",
-    panel.grid.minor = element_blank()
-  )
+par(op)
 ```
 
 ## 5. Takeaways
 
-- **WINN improves recovery of the true signal** compared to raw measurements.
-- **QC-based auto selection typically improves QC consistency** while maintaining biological effect sizes.
-- Providing known batch information generally performs better than auto‑detection.
-
-This simulated dataset is intentionally simple. For real LC‑MS data, consider using QC samples and metadata to guide drift and batch correction.
+- The vignette is self-contained: it generates its own data and reruns without
+  external files or internet access.
+- A fixed-parameter WiNN run is fast enough for documentation while still
+  showing the full correction workflow.
+- Pearson, ICC, and QC-CV provide complementary checks: signal recovery,
+  agreement, and QC tightness.

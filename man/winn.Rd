@@ -16,7 +16,7 @@ winn(
   spline_method = "conservative",
   remove_batch_effects = "anova",
   test = "Ljung-Box",
-  lag = 20,
+  lag = NULL,
   scale_by_batch = FALSE,
   pelt_penalty = NULL
 )
@@ -45,11 +45,15 @@ these will be used for normalization and parameter tuning.}
 
 \item{test}{A character string specifying the autocorrelation test ("Ljung-Box" or "DW").}
 
-\item{lag}{An integer specifying the lag for the autocorrelation test.}
+\item{lag}{An optional integer specifying the lag for the autocorrelation test.
+If \code{NULL}, \code{autocorrelation_correct()} selects the lag adaptively for each
+batch segment.}
 
 \item{scale_by_batch}{Logical indicating whether to scale data by batch after corrections.}
 
-\item{pelt_penalty}{Optional numeric penalty for fkPELT segmentation. If NULL, a penalty based on sample size is used.}
+\item{pelt_penalty}{Optional fkPELT penalty specification. Use a positive
+numeric value, \code{"bic"}, \code{"mbic"}, or \code{NULL}. When \code{NULL}, fkPELT uses
+the conservative MBIC default.}
 }
 \value{
 A numeric matrix of corrected intensities.
@@ -61,11 +65,11 @@ If batch information is not supplied, segments are automatically detected using 
 \details{
 The correction pipeline is as follows:
 \enumerate{
-  \item Outlier adjustment using MAD.
-  \item Drift correction using autocorrelation-based detrending.
-  \item Batch effect correction using ANOVA-based mean-adjustment or ComBat.
-  \item Per-sample median adjustment using dilution factor.
-  \item Optional scaling by batch.
+\item Outlier adjustment using MAD.
+\item Drift correction using autocorrelation-based detrending.
+\item Batch effect correction using ANOVA-based mean-adjustment or ComBat.
+\item Per-sample median adjustment using dilution factor.
+\item Optional scaling by batch.
 }
 
 When control samples are provided and parameters="auto", the function performs comprehensive parameter

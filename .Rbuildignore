@@ -1,2 +1,13 @@
-^.*\.Rproj$
+^\\.Rproj\\.user$
+(^|/)winn\\.Rproj$
+^\\.git$
+^\\.gitignore$
+^\\.DS_Store$
+^\\.Rhistory$
+^\\.RData$
+^R/\\.Rhistory$
+^man/\\.Rhistory$
+^notebooks$
+^\\.\\.Rcheck$
+^vignettes/winn_tutorial\\.html$
 ^\.Rproj\.user$

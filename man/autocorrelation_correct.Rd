@@ -8,7 +8,7 @@ autocorrelation_correct(
   data,
   run_order = NULL,
   batch,
-  lag = 20,
+  lag = NULL,
   test = "Ljung-Box",
   detrend = "mean",
   fdr_threshold = 0.05,
@@ -22,7 +22,9 @@ autocorrelation_correct(
 
 \item{batch}{A numeric vector indicating the batch (or segment) assignment for each sample.}
 
-\item{lag}{An integer specifying the lag to be used in the autocorrelation test.}
+\item{lag}{An optional integer specifying the lag to be used in the autocorrelation test.
+If \code{NULL}, the lag is selected adaptively for each batch segment using
+\code{max(min(10, floor(n / 5)), df + 3)} and then capped at \code{n - 1}.}
 
 \item{test}{A character string specifying the autocorrelation test to use ("Ljung-Box" or "DW").}
 

@@ -1,0 +1,6 @@
+"parameter" "value"
+"Frule" "0.8"
+"MLmethod" "QCRFSC"
+"ntree" "500"
+"imputeM" "KNN"
+"coCV" "30"

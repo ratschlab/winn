@@ -1,50 +1,39 @@
 #' winn: White Noise Normalization for Metabolomics
 #'
-#' 
-#' The \\pkg{winn} package provides a transparent, stepwise pipeline to correct
-#' technical artifacts in LC-MS/GC-MS metabolomics data. WINN is designed to be
-#' practical for real-world datasets that exhibit drift, batch effects, and
-#' dilution variability. Each step in the pipeline can be used independently or
-#' combined in the full workflow via \\code{\\link{winn}}.
+#' The `winn` package provides a transparent, stepwise workflow for correcting
+#' technical artifacts in LC-MS and GC-MS metabolomics data. WINN is designed
+#' for real study data that exhibit drift, batch effects, dilution variability,
+#' and occasional outliers. Each correction step can be used independently or
+#' combined in the full workflow via [winn()].
 #'
-#' 
 #' Core steps in the WINN pipeline:
-#' \\enumerate{
-#'   \\item Robust outlier adjustment (MAD-based)
-#'   \\item Drift correction by run order (autocorrelation + detrending)
-#'   \\item Batch correction (ANOVA mean-shift or ComBat)
-#'   \\item Median/PQN normalization for dilution effects
-#'   \\item Optional per-batch scaling
-#' }
 #'
-#' 
+#' 1. Robust outlier adjustment (MAD-based)
+#' 2. Drift correction by run order with a white-noise gatekeeper
+#' 3. Batch correction (ANOVA mean-shift or ComBat)
+#' 4. Median or PQN normalization for dilution effects
+#' 5. Optional per-batch scaling
+#'
 #' If batch labels are not provided, WINN can automatically detect batch
-#' segments using an fkPELT change-point method on the median sample signal.
-#' If pooled QC samples are provided, WINN can automatically tune several
+#' segments using an fkPELT change-point method on the median sample signal. If
+#' pooled QC samples are provided, WINN can automatically tune several
 #' parameters to maximize QC consistency.
 #'
-#' 
 #' @section Data format:
-#' 
-#' WINN expects a **metabolites × samples** matrix (rows are metabolites,
-#' columns are samples). Run order and batch annotations should be provided
-#' as vectors of length \\code{ncol(data)}.
+#' WINN expects a metabolites-by-samples matrix. Run order, batch annotations,
+#' and QC index vectors should all align with `ncol(data)`.
 #'
 #' @section Dependencies:
-#' 
-#' \\itemize{
-#'   \\item \\pkg{mgcv} for spline-based drift detrending
-#'   \\item \\pkg{lmtest} for Durbin-Watson autocorrelation test
-#'   \\item \\pkg{sva} for ComBat batch correction (optional)
-#' }
+#' - `mgcv` for spline-based drift detrending
+#' - `lmtest` for the Durbin-Watson autocorrelation test
+#' - `sva` for ComBat batch correction
 #'
 #' @section Recommended usage:
-#' 
-#' \\itemize{
-#'   \\item Provide \\code{batch} and \\code{run_order} whenever possible.
-#'   \\item Use QC samples and \\code{parameters = "auto"} for robust tuning.
-#'   \\item Inspect QC CV and correlation before/after correction.
-#' }
+#' - Provide `batch` and `run_order` whenever possible.
+#' - Use QC samples and `parameters = "auto"` for robust tuning.
+#' - Inspect QC CV and correlation before and after correction.
 #'
+#' @importFrom stats Box.test aov approx cor lm loess mad median model.matrix
+#' @importFrom stats p.adjust sd var
 #' @keywords internal
 "_PACKAGE"

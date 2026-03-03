@@ -1,0 +1,605 @@
+---
+title: "WINN Comparison Notebook"
+output: rmarkdown::html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+This notebook compares **WINN** against commonly used metabolomics correction methods, including **QC‑RLSC**, **QC‑RFSC**, **QC‑LOESS**, **SERRF**, and **ComBat**. It also includes practical baselines (raw and PQN-only) and a widely used batch‑correction alternative (`limma::removeBatchEffect`).
+
+All metrics are computed on **simulated LC‑MS data** with known drift, batch effects, and sample‑wise dilution. Biological groups are randomized *within each batch* and QC samples appear every 8th measurement.
+
+---
+
+## 1. Dependencies
+
+This notebook uses a few optional packages. If some are missing, those methods will be skipped.
+
+```{r dependencies}
+req <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    message("Package not installed: ", pkg)
+    return(FALSE)
+  }
+  TRUE
+}
+
+has_winn <- req("winn")
+has_sva <- req("sva")
+has_limma <- req("limma")
+has_statTarget <- req("statTarget")
+has_serrf <- req("SERRF")
+serrf_pkg <- NULL
+if (!has_serrf) {
+  has_serrf <- req("serrf")
+  if (has_serrf) serrf_pkg <- "serrf"
+} else {
+  serrf_pkg <- "SERRF"
+}
+has_qcrlscR <- req("qcrlscR")
+```
+
+---
+
+## 2. Simulate LC‑MS data with drift + batch effects
+
+```{r simulate}
+set.seed(42)
+
+n_met <- 50
+n_samples <- 201
+n_batches <- 4
+samples_per_batch <- floor(n_samples / n_batches)
+
+batch <- rep(seq_len(n_batches), each = samples_per_batch, length.out = n_samples)
+run_order <- seq_len(n_samples)
+
+qc_idx <- unique(c(seq(1, n_samples, by = 8), n_samples))
+non_qc_idx <- setdiff(seq_len(n_samples), qc_idx)
+
+# Randomize biological groups along measurement order (QC excluded),
+# with equal A/B counts within each batch
+group <- rep(NA_character_, n_samples)
+group[qc_idx] <- "QC"
+for (b in seq_len(n_batches)) {
+  idx_b <- which(batch == b)
+  non_qc_b <- intersect(idx_b, non_qc_idx)
+  n_b <- length(non_qc_b)
+  labels <- rep(c("A", "B"), length.out = n_b)
+  group[non_qc_b] <- sample(labels)
+}
+
+# True log-scale signal (no drift; centered around metabolite-specific mean)
+base_mean <- rnorm(n_met, mean = 8, sd = 0.5)
+baseline_log <- base_mean + matrix(rnorm(n_met * n_samples, mean = 0, sd = 0.1), nrow = n_met)
+
+# Binary group effect (10–20% of metabolites)
+effect_prop <- runif(1, 0.10, 0.20)
+effect_count <- max(1, round(n_met * effect_prop))
+effect_metabolites <- sort(sample(seq_len(n_met), effect_count))
+true_effect <- rep(0, n_met)
+true_effect[effect_metabolites] <- rnorm(effect_count, mean = 0.8, sd = 0.1)
+
+true_log <- baseline_log
+true_log[effect_metabolites, group == "B"] <- true_log[effect_metabolites, group == "B"] +
+  true_effect[effect_metabolites]
+
+# Continuous covariate (5–10% of metabolites), independent of run order
+cont_var <- runif(n_samples, min = 0, max = 1)
+cont_var[qc_idx] <- 0
+cont_prop <- runif(1, 0.05, 0.10)
+cont_count <- max(1, round(n_met * cont_prop))
+cont_metabolites <- setdiff(seq_len(n_met), effect_metabolites)
+cont_metabolites <- sort(sample(cont_metabolites, cont_count))
+cont_effect <- rep(0, n_met)
+# Weaker effect size (0.6-0.9 instead of 1.2) so drift/batch noise matters more
+cont_effect[cont_metabolites] <- rnorm(cont_count, mean = 0.75, sd = 0.08)
+true_log[cont_metabolites, ] <- true_log[cont_metabolites, ] +
+  cont_effect[cont_metabolites] %*% t(cont_var)
+
+# QC samples: pooled reference
+pooled_log <- rowMeans(true_log[, group != "QC", drop = FALSE])
+true_log[, qc_idx] <- pooled_log
+
+# Sample-wise dilution (multiplicative)
+dilution_factor <- exp(rnorm(n_samples, mean = 0, sd = 0.08))
+
+# Drift per batch (warm-up -> plateau -> decline with non-linear curvature)
+smoothstep <- function(x) {
+  x <- pmin(pmax(x, 0), 1)
+  x * x * (3 - 2 * x)
+}
+
+make_batch_drift <- function(n, shape = c("linearish", "nonlinear")) {
+  shape <- match.arg(shape)
+  n1 <- floor(n * 0.30)
+  n2 <- floor(n * 0.45)
+  n3 <- n - n1 - n2
+
+  up <- smoothstep(seq(0, 1, length.out = n1))
+  flat <- rep(1, n2)
+  down <- 1 - smoothstep(seq(0, 1, length.out = n3))
+  base <- c(up, flat, down)
+
+  curve_strength <- ifelse(shape == "nonlinear", 0.15, 0.06)
+  curve <- curve_strength * (seq_len(n) / n - 0.5)^2
+  rw <- cumsum(rnorm(n, mean = 0, sd = ifelse(shape == "nonlinear", 0.012, 0.008)))
+  base <- base + curve + rw
+
+  base <- base - min(base)
+  base <- base / max(base)
+  base
+}
+
+drift_log <- matrix(0, nrow = n_met, ncol = n_samples)
+# 20-25% with strong drift, 20-25% with minimal drift, rest moderate
+drift_tier <- runif(n_met)
+strong_mask <- drift_tier < 0.25
+low_mask <- drift_tier >= 0.75
+drift_severity <- numeric(n_met)
+drift_severity[strong_mask] <- runif(sum(strong_mask), 0.20, 0.38)
+drift_severity[low_mask] <- runif(sum(low_mask), 0.00, 0.03)
+drift_severity[!(strong_mask | low_mask)] <- runif(sum(!(strong_mask | low_mask)), 0.10, 0.18)
+amp <- rnorm(n_met, mean = drift_severity, sd = pmax(drift_severity * 0.2, 0.01))
+for (b in seq_len(n_batches)) {
+  idx <- which(batch == b)
+  shape <- ifelse(b %% 2 == 0, "nonlinear", "linearish")
+  trend_b <- make_batch_drift(length(idx), shape = shape)
+  drift_log[, idx] <- amp %*% t(trend_b)
+}
+
+# Batch effects (per-metabolite, variable severity)
+batch_severity <- numeric(n_met)
+batch_severity[strong_mask] <- runif(sum(strong_mask), 0.40, 0.80)
+batch_severity[low_mask] <- runif(sum(low_mask), 0.00, 0.04)
+batch_severity[!(strong_mask | low_mask)] <- runif(sum(!(strong_mask | low_mask)), 0.06, 0.20)
+batch_shift_mat <- sapply(seq_len(n_batches), function(b) rnorm(n_met, mean = 0, sd = batch_severity))
+batch_scale_mat <- sapply(seq_len(n_batches), function(b) exp(rnorm(n_met, mean = 0, sd = batch_severity / 2)))
+
+batch_log <- matrix(0, nrow = n_met, ncol = n_samples)
+for (b in seq_len(n_batches)) {
+  idx <- which(batch == b)
+  batch_log[, idx] <- batch_shift_mat[, b] + log(batch_scale_mat[, b])
+}
+
+# Homoscedastic noise (constant variance across intensities)
+noise_log <- matrix(rnorm(n_met * n_samples, mean = 0, sd = 0.12), nrow = n_met)
+
+# Observed data in intensity space
+observed_log <- true_log +
+  matrix(log(dilution_factor), nrow = n_met, ncol = n_samples, byrow = TRUE) +
+  drift_log +
+  batch_log +
+  noise_log
+
+true_intensity <- pmax(expm1(true_log), 0)
+observed_intensity <- pmax(expm1(observed_log), 0)
+
+# Add sample names (used by some methods)
+colnames(observed_intensity) <- paste0("S", seq_len(n_samples))
+colnames(true_intensity) <- colnames(observed_intensity)
+```
+
+---
+
+## 3. Run correction methods
+
+```{r run-methods, message=TRUE}
+if (!has_winn) stop("winn package is required for this notebook")
+
+library(winn)
+
+# WINN
+winn_without_qcs <- winn(
+  observed_intensity,
+  batch = batch,
+  run_order = run_order,
+  median_adjustment = "shrink",
+  remove_batch_effects = "anova",
+  scale_by_batch = FALSE
+)
+
+winn_qc_auto <- winn(
+  observed_intensity,
+  batch = batch,
+  run_order = run_order,
+  control_samples = qc_idx,
+  parameters = "auto",
+  median_adjustment = "shrink",
+  remove_batch_effects = "anova",
+  scale_by_batch = FALSE
+)
+
+# PQN only (dilution normalization)
+pqn_only <- normalize_by_dilution_factor(
+  observed_intensity,
+  processing = "normalize",
+  control_samples = qc_idx
+)
+
+# ComBat (sva)
+combat_corrected <- if (has_sva) {
+  combat_batch_correction(observed_intensity, batch = batch)
+} else {
+  NULL
+}
+
+# limma::removeBatchEffect (log1p space)
+limma_corrected <- if (has_limma) {
+  x_log <- log1p(observed_intensity)
+  y_log <- limma::removeBatchEffect(x_log, batch = batch)
+  pmax(expm1(y_log), 0)
+} else {
+  NULL
+}
+
+# QC-RLSC (qcrlscR)
+qc_rlsc_corrected <- if (has_qcrlscR) {
+  dat <- t(observed_intensity)  # samples x metabolites
+  y <- ifelse(group == "QC", "QC", "Sample")
+  res <- qcrlscR::qc.rlsc(
+    dat,
+    y = y,
+    sample = run_order,
+    method = "divide"
+  )
+  t(as.matrix(res))
+} else {
+  NULL
+}
+
+# QC-RFSC / QC-RLSC (statTarget::shiftCor)
+run_shiftcor <- function(method) {
+  if (!has_statTarget) return(NULL)
+
+  # prepare metadata
+  sample_names <- colnames(observed_intensity)
+  meta <- data.frame(
+    sample = sample_names,
+    batch = batch,
+    class = ifelse(group == "QC", NA, "Sample"),
+    order = run_order,
+    stringsAsFactors = FALSE
+  )
+
+  # Ensure ordering by run order and QC at first/last (statTarget requirement)
+  meta <- meta[order(meta$order), ]
+  if (!is.na(meta$class[1]) || !is.na(meta$class[nrow(meta)])) {
+    message("statTarget requires QC as first and last sample (by run order). Skipping ", method, ".")
+    return(NULL)
+  }
+
+  # prepare expression file (features x samples with header)
+  samFile_df <- data.frame(
+    name = paste0("M", seq_len(n_met)),
+    observed_intensity,
+    check.names = FALSE
+  )
+  samFile_df <- samFile_df[, c("name", meta$sample), drop = FALSE]
+  meta$sample[which(is.na(meta$class))] <- paste0(meta$sample[which(is.na(meta$class))], "_QC")
+  colnames(samFile_df)[2:ncol(samFile_df)] <- meta$sample
+
+  tmp <- tempfile("shiftcor_")
+  dir.create(tmp)
+  old <- getwd()
+  setwd(tmp)
+  on.exit(setwd(old), add = TRUE)
+
+  samPeno_file <- file.path(tmp, "samPeno.csv")
+  samFile_file <- file.path(tmp, "samFile.csv")
+
+  write.csv(meta, samPeno_file, row.names = FALSE, quote = FALSE)
+  write.csv(samFile_df, samFile_file, row.names = FALSE, quote = FALSE)
+
+  statTarget::shiftCor(
+    samPeno = samPeno_file,
+    samFile = samFile_file,
+    Frule = 0.8,
+    MLmethod = method
+  )
+
+  out_file <- file.path("statTarget", "shiftCor", "After_shiftCor", "shift_all_cor.csv")
+  if (!file.exists(out_file)) return(NULL)
+
+  df <- read.csv(out_file, check.names = FALSE)
+  # First row and column are sample and class
+  mat <- apply(as.matrix(df[-1, -1, drop = FALSE]), 2, as.numeric)
+  rownames(mat) <- df$sample[-1]
+  mat[, meta$sample, drop = FALSE]
+}
+
+qc_rfsc_corrected <- run_shiftcor("QCRFSC")
+#qc_rlsc_statTarget <- run_shiftcor("QCRLSC")
+qc_rlsc_statTarget <- NULL
+
+# QC-LOESS (base R; widely used QC-based drift correction)
+qc_loess_corrected <- {
+  if (length(qc_idx) < 5) {
+    NULL
+  } else {
+    x_log <- log1p(observed_intensity)
+    corrected <- x_log
+    for (i in seq_len(nrow(x_log))) {
+      y_qc <- x_log[i, qc_idx]
+      fit <- tryCatch(
+        loess(y_qc ~ run_order[qc_idx], span = 0.75, degree = 1),
+        error = function(e) NULL
+      )
+      if (is.null(fit)) next
+      pred <- predict(fit, newdata = run_order)
+      ref <- mean(pred[qc_idx], na.rm = TRUE)
+      corrected[i, ] <- x_log[i, ] - (pred - ref)
+    }
+    pmax(expm1(corrected), 0)
+  }
+}
+
+# SERRF (optional, if package is available)
+serrf_corrected <- if (has_serrf) {
+  tryCatch({
+    ns <- asNamespace(serrf_pkg)
+    exports <- getNamespaceExports(serrf_pkg)
+    fn_name <- if ("SERRF" %in% exports) {
+      "SERRF"
+    } else if ("serrf" %in% exports) {
+      "serrf"
+    } else {
+      NULL
+    }
+
+    if (is.null(fn_name)) return(NULL)
+
+    fn <- get(fn_name, ns)
+    dat <- t(observed_intensity)  # samples x metabolites
+    sample_type <- ifelse(group == "QC", "QC", "Sample")
+
+    res <- tryCatch({
+      fn(dat, sampleType = sample_type, order = run_order)
+    }, error = function(e) {
+      fn(dat, sampleType = sample_type)
+    })
+
+    t(as.matrix(res))
+  }, error = function(e) {
+    message("SERRF failed: ", conditionMessage(e))
+    NULL
+  })
+} else {
+  NULL
+}
+```
+
+---
+
+## 4. Metrics
+
+We report:
+
+- **Mean per‑metabolite correlation** with the true signal (log1p scale)
+- **Mean QC CV** (lower is better)
+- **Biological effect preservation**: for metabolites with true effects, we compute
+  `1 / (1 + |estimated_effect − true_effect|)` (higher is better)
+- **Continuous covariate preservation**: same `1 / (1 + |error|)` metric on per‑metabolite slopes
+
+```{r metrics}
+calc_metric_vectors <- function(x, truth, group, qc_idx, effect_metabolites, cont_var, cont_metabolites) {
+  # log-space
+  x_log <- log1p(x)
+  truth_log <- log1p(truth)
+
+  # 1) per-metabolite correlation between corrected and true
+  cor_vec <- sapply(seq_len(nrow(x_log)), function(i) {
+    cor(x_log[i, ], truth_log[i, ], use = "pairwise.complete.obs")
+  })
+
+  # 2) QC CV per metabolite
+  qc_log <- x_log[, qc_idx, drop = FALSE]
+  qc_cv_vec <- apply(qc_log, 1, function(v) {
+    mu <- mean(v, na.rm = TRUE)
+    if (is.na(mu) || mu == 0) return(NA_real_)
+    sd(v, na.rm = TRUE) / abs(mu)
+  })
+
+  # 3) Effect-size recovery for binary group effects
+  est_effect <- rowMeans(x_log[, group == "B", drop = FALSE]) -
+    rowMeans(x_log[, group == "A", drop = FALSE])
+  true_effect <- rowMeans(truth_log[, group == "B", drop = FALSE]) -
+    rowMeans(truth_log[, group == "A", drop = FALSE])
+
+  est_eff_sub <- est_effect[effect_metabolites]
+  true_eff_sub <- true_effect[effect_metabolites]
+  effect_error <- est_eff_sub - true_eff_sub
+  effect_abs_error <- abs(effect_error)
+
+  effect_preserve_vec <- 1 / (1 + effect_abs_error)
+
+  # 4) Continuous covariate recovery: estimate slope per metabolite and compare to truth
+  non_qc <- group != "QC"
+  fit_slope <- function(y, xcov) {
+    if (all(is.na(y)) || length(unique(xcov)) < 2) return(NA_real_)
+    m <- tryCatch(coef(lm(y ~ xcov)), error = function(e) c(NA_real_, NA_real_))
+    as.numeric(m[2])
+  }
+
+  est_slopes <- sapply(cont_metabolites, function(i) fit_slope(x_log[i, non_qc], cont_var[non_qc]))
+  true_slopes <- sapply(cont_metabolites, function(i) fit_slope(truth_log[i, non_qc], cont_var[non_qc]))
+
+  cont_slope_error <- est_slopes - true_slopes
+  cont_preserve_vec <- 1 / (1 + abs(cont_slope_error))
+
+  list(
+    cor_vec = cor_vec,
+    qc_cv_vec = qc_cv_vec,
+    # effect-size vectors and summary scalars
+    effect_preserve_vec = effect_preserve_vec,
+    # continuous slopes
+    cont_preserve_vec = cont_preserve_vec
+  )
+}
+
+summarize_metric <- function(x) {
+  x <- x[is.finite(x)]
+  c(mean = mean(x), se = sd(x) / sqrt(length(x)))
+}
+
+# Identify metabolites with true effects
+met_names <- paste0("M", seq_len(n_met))
+rownames(true_intensity) <- met_names
+rownames(observed_intensity) <- met_names
+rownames(winn_without_qcs) <- met_names
+rownames(winn_qc_auto) <- met_names
+rownames(pqn_only) <- met_names
+if (!is.null(combat_corrected)) rownames(combat_corrected) <- met_names
+if (!is.null(limma_corrected)) rownames(limma_corrected) <- met_names
+if (!is.null(qc_rlsc_corrected)) rownames(qc_rlsc_corrected) <- met_names
+if (!is.null(qc_rfsc_corrected)) rownames(qc_rfsc_corrected) <- met_names
+if (!is.null(qc_rlsc_statTarget)) rownames(qc_rlsc_statTarget) <- met_names
+if (!is.null(qc_loess_corrected)) rownames(qc_loess_corrected) <- met_names
+if (!is.null(serrf_corrected)) rownames(serrf_corrected) <- met_names
+
+sample_names <- colnames(observed_intensity)
+colnames(true_intensity) <- sample_names
+colnames(winn_without_qcs) <- sample_names
+colnames(winn_qc_auto) <- sample_names
+colnames(pqn_only) <- sample_names
+if (!is.null(combat_corrected)) colnames(combat_corrected) <- sample_names
+if (!is.null(limma_corrected)) colnames(limma_corrected) <- sample_names
+if (!is.null(qc_rlsc_corrected)) colnames(qc_rlsc_corrected) <- sample_names
+if (!is.null(qc_rfsc_corrected)) colnames(qc_rfsc_corrected) <- sample_names
+if (!is.null(qc_rlsc_statTarget)) colnames(qc_rlsc_statTarget) <- sample_names
+if (!is.null(qc_loess_corrected)) colnames(qc_loess_corrected) <- sample_names
+if (!is.null(serrf_corrected)) colnames(serrf_corrected) <- sample_names
+
+# List of methods to compare
+methods <- list(
+  Raw = observed_intensity,
+  PQN_only = pqn_only,
+  WINN_without_QCs = winn_without_qcs,
+  WINN_QC_auto = winn_qc_auto,
+  ComBat = combat_corrected,
+  limma_removeBatchEffect = limma_corrected,
+  QC_LOESS = qc_loess_corrected,
+  QC_RLSC = qc_rlsc_corrected,
+  QC_RFSC = qc_rfsc_corrected,
+  QC_RLSC_statTarget = qc_rlsc_statTarget,
+  SERRF = serrf_corrected
+)
+
+# Remove missing methods
+methods <- methods[!sapply(methods, is.null)]
+
+# Compute metrics
+metrics_list <- lapply(methods, calc_metric_vectors,
+                       truth = true_intensity,
+                       group = group,
+                       qc_idx = qc_idx,
+                       effect_metabolites = effect_metabolites,
+                       cont_var = cont_var,
+                       cont_metabolites = cont_metabolites)
+
+# Summarize
+summary_rows <- do.call(rbind, lapply(names(metrics_list), function(name) {
+  m <- metrics_list[[name]]
+  # vector metrics use summarize_metric; scalar metrics are reported with NA se
+  vec_mean_cor <- summarize_metric(m$cor_vec)["mean"]
+  vec_se_cor <- summarize_metric(m$cor_vec)["se"]
+
+  vec_mean_qc <- summarize_metric(m$qc_cv_vec)["mean"]
+  vec_se_qc <- summarize_metric(m$qc_cv_vec)["se"]
+
+  vec_mean_eff_pres <- summarize_metric(m$effect_preserve_vec)["mean"]
+  vec_se_eff_pres <- summarize_metric(m$effect_preserve_vec)["se"]
+
+  vec_mean_cont_pres <- summarize_metric(m$cont_preserve_vec)["mean"]
+  vec_se_cont_pres <- summarize_metric(m$cont_preserve_vec)["se"]
+
+  data.frame(
+    method = name,
+    metric = c(
+      "Mean correlation",
+      "QC CV",
+      "Effect preservation",
+      "Continuous preservation"
+    ),
+    mean = c(
+      vec_mean_cor,
+      vec_mean_qc,
+      vec_mean_eff_pres,
+      vec_mean_cont_pres
+    ),
+    se = c(
+      vec_se_cor,
+      vec_se_qc,
+      vec_se_eff_pres,
+      vec_se_cont_pres
+    )
+  )
+}))
+
+summary_rows
+```
+
+```{r results-table}
+summary_rows[,3:4] <- round(summary_rows[,3:4], 4)
+if (!requireNamespace("knitr", quietly = TRUE)) stop("knitr is required for the results table")
+knitr::kable(
+  summary_rows,
+  caption = "Summary metrics (mean ± SE across metabolites)."
+)
+```
+
+---
+
+## 5. Bar plots with standard error
+
+```{r plots, fig.width=10, fig.height=7}
+if (!requireNamespace("ggplot2", quietly = TRUE)) stop("ggplot2 is required for plotting")
+library(ggplot2)
+
+# Add continuous covariate metrics to plot table
+plot_rows <- summary_rows
+plot_rows$method <- factor(plot_rows$method, levels = unique(plot_rows$method))
+
+palette <- c(
+  "Raw" = "#5E5E5E",
+  "PQN_only" = "#9E9E9E",
+  "WINN_without_QCs" = "#2A9D8F",
+  "WINN_QC_auto" = "#1F77B4",
+  "ComBat" = "#E76F51",
+  "limma_removeBatchEffect" = "#8E6C8A",
+  "QC_LOESS" = "#4E79A7",
+  "QC_RLSC" = "#59A14F",
+  "QC_RFSC" = "#F28E2B",
+  "QC_RLSC_statTarget" = "#B07AA1",
+  "SERRF" = "#EDC948"
+)
+
+ggplot(plot_rows, aes(x = method, y = mean, fill = method)) +
+  geom_col(width = 0.7, color = "black", linewidth = 0.2) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
+                width = 0.2, linewidth = 0.3, na.rm = TRUE) +
+  facet_wrap(~ metric, scales = "free_y") +
+  scale_fill_manual(values = palette, drop = FALSE) +
+  labs(
+    title = "Method Comparison on Simulated LC-MS Data",
+    x = NULL,
+    y = "Mean ± SE"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+---
+
+## Notes
+
+- **QC‑RFSC** and **QC‑RLSC** are run via `statTarget::shiftCor` when available.
+- If those packages are not installed, the corresponding methods are skipped.
+- All metrics are computed in a consistent way across methods.

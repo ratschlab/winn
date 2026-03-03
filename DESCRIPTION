@@ -1,26 +1,37 @@
 Package: winn
-Title: Metabolomics Correction with winn
-Version: 0.1.0
-Authors@R: person("Tanmay", "Tanna", email = "ttanna@ethz.ch", role = c("aut", "cre"))
-Description: Provides functions to correct metabolomics data including dilution, outlier, drift, and batch adjustments.
+Title: White Noise Normalization for Metabolomics LC-MS Data
+Version: 0.1.1
+Authors@R: person(given = "Tanmay", family = "Tanna", email = "ttanna@ethz.ch", role = c("aut", "cre"))
+Author: Tanmay Tanna [aut, cre]
+Maintainer: Tanmay Tanna <ttanna@ethz.ch>
+Description: Provides a decision-guided workflow for correcting technical
+    variability in metabolomics data while preserving metabolites that already
+    satisfy a white-noise gatekeeper. The package combines robust outlier
+    adjustment, adaptive drift detection, fkPELT-based batch segmentation,
+    batch correction, and probabilistic quotient normalization in a single
+    pipeline or as modular steps. It supports QC-informed parameter tuning as
+    well as QC-agnostic operation for studies without pooled controls. The
+    underlying white-noise normalization strategy is aligned with the WiNN
+    framework described in Demler et al. (2020) <doi:10.7490/f1000research.1118070.1>.
 Depends: R (>= 3.5.0)
 Imports:
+    stats,
+    lmtest,
     mgcv,
     splines,
-    lmtest,
-    dplyr,
-    lawstat,
     sva
 Suggests:
-    testthat (>= 3.0.0),
-    roxygen2,
-    knitr,
+    ggplot2,
     rmarkdown,
-    ggplot2
-License: GPL-3
+    knitr,
+    roxygen2,
+    testthat (>= 3.0.0)
+License: GPL-3 + file LICENSE
 Encoding: UTF-8
-LazyData: true
+Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 VignetteBuilder: knitr
 Config/testthat/edition: 3
 Additional_repositories: https://bioconductor.org/packages/release/bioc
+URL: https://github.com/ratschlab/winn
+BugReports: https://github.com/ratschlab/winn/issues

@@ -129,7 +129,9 @@ adjust_outliers_mad <- function(data) {
 #' @param data A numeric matrix with rows representing metabolites and columns representing samples.
 #' @param run_order An optional numeric vector representing the run order of the samples.
 #' @param batch A numeric vector indicating the batch (or segment) assignment for each sample.
-#' @param lag An integer specifying the lag to be used in the autocorrelation test.
+#' @param lag An optional integer specifying the lag to be used in the autocorrelation test.
+#' If `NULL`, the lag is selected adaptively for each batch segment using
+#' `max(min(10, floor(n / 5)), df + 3)` and then capped at `n - 1`.
 #' @param test A character string specifying the autocorrelation test to use ("Ljung-Box" or "DW").
 #' @param detrend A character string indicating the method for detrending ("mean" or "spline").
 #' @param fdr_threshold A numeric value specifying the FDR threshold for significance.
@@ -144,7 +146,7 @@ adjust_outliers_mad <- function(data) {
 autocorrelation_correct <- function(data,
                                     run_order = NULL,
                                     batch,
-                                    lag = 20,
+                                    lag = NULL,
                                     test = "Ljung-Box",
                                     detrend = "mean",
                                     fdr_threshold = 0.05,
@@ -157,6 +159,10 @@ autocorrelation_correct <- function(data,
   if (is.null(batch) || length(batch) != ncol(data)) {
     stop("batch vector must be provided and its length must equal number of columns in data.")
   }
+  if (!is.null(lag) && (length(lag) != 1 || !is.numeric(lag) || is.na(lag) ||
+    lag <= 0 || lag != round(lag))) {
+    stop("lag must be NULL or a positive integer.")
+  }
   
   detrended_data <- data
   batch_vec <- batch
@@ -165,6 +171,13 @@ autocorrelation_correct <- function(data,
   for (b in unique_batch) {
     idx <- which(batch_vec == b)
     segment <- data[, idx, drop = FALSE]
+    segment_n <- length(idx)
+    model_df <- .autocorrelation_model_df(test = test)
+    segment_lag <- .resolve_autocorrelation_lag(
+      lag = lag,
+      n_obs = segment_n,
+      model_df = model_df
+    )
     seg_run <- if (!is.null(run_order)) run_order[idx] else seq_along(idx)
     if (detrend == "spline") {
       spline_vals <- apply(segment, 1, function(x) {
@@ -173,7 +186,7 @@ autocorrelation_correct <- function(data,
           fit <- .fit_conservative_spline(log_seg, seg_run)
         } else {
           fit <- tryCatch(
-            mgcv::gam(log_seg ~ s(seg_run, bs = "cr")),
+            mgcv::gam(log_seg ~ mgcv::s(seg_run, bs = "cr")),
             error = function(e)
               NULL
           )
@@ -186,10 +199,20 @@ autocorrelation_correct <- function(data,
       z <- log1p(data[, idx, drop = FALSE]) - t(spline_vals)
       detrended_data[, idx] <- .inv_log1p(z, clamp_nonneg = TRUE)
     } else if (detrend == "mean") {
+      # Use log1p-transformed data for autocorrelation testing (consistent with detrending)
       p_vals <- apply(segment, 1, function(x) {
+        x_log <- log1p(x)
         if (test == "Ljung-Box") {
+          if (is.na(segment_lag)) {
+            return(NA_real_)
+          }
           tryCatch(
-            Box.test(x, lag = lag, type = "Ljung-Box")$p.value,
+            Box.test(
+              x_log,
+              lag = segment_lag,
+              type = "Ljung-Box",
+              fitdf = model_df
+            )$p.value,
             error = function(e)
               NA
           )
@@ -198,7 +221,7 @@ autocorrelation_correct <- function(data,
             stop("Package 'lmtest' is required for DW test. Please install it.")
           }
           tryCatch(
-            lmtest::dwtest(x ~ seg_run)$p.value,
+            lmtest::dwtest(x_log ~ seg_run)$p.value,
             error = function(e)
               NA
           )
@@ -215,7 +238,7 @@ autocorrelation_correct <- function(data,
             fit <- .fit_conservative_spline(log_seg, seg_run)
           } else {
             fit <- tryCatch(
-              mgcv::gam(log_seg ~ s(seg_run, bs = "cr")),
+              mgcv::gam(log_seg ~ mgcv::s(seg_run, bs = "cr")),
               error = function(e)
                 NULL
             )
@@ -406,9 +429,13 @@ scale_by_batch <- function(data, batch) {
 #' @param spline_method A character string specifying the spline method when detrend="spline" ("conservative" for robust drift removal or "standard" for traditional approach).
 #' @param remove_batch_effects A character string specifying the method for removing batch effects ("anova" or "combat").
 #' @param test A character string specifying the autocorrelation test ("Ljung-Box" or "DW").
-#' @param lag An integer specifying the lag for the autocorrelation test.
+#' @param lag An optional integer specifying the lag for the autocorrelation test.
+#' If `NULL`, `autocorrelation_correct()` selects the lag adaptively for each
+#' batch segment.
 #' @param scale_by_batch Logical indicating whether to scale data by batch after corrections.
-#' @param pelt_penalty Optional numeric penalty for fkPELT segmentation. If NULL, a penalty based on sample size is used.
+#' @param pelt_penalty Optional fkPELT penalty specification. Use a positive
+#' numeric value, `"bic"`, `"mbic"`, or `NULL`. When `NULL`, fkPELT uses
+#' the conservative MBIC default.
 #' @return A numeric matrix of corrected intensities.
 #' @examples
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
@@ -427,7 +454,7 @@ winn <- function(data,
                  spline_method = "conservative",
                  remove_batch_effects = "anova",
                  test = "Ljung-Box",
-                 lag = 20,
+                 lag = NULL,
                  scale_by_batch = FALSE,
                  pelt_penalty = NULL) {
   # Input validation
@@ -486,11 +513,16 @@ winn <- function(data,
   if (fdr_threshold <= 0 || fdr_threshold >= 1) {
     stop("fdr_threshold must be between 0 and 1.")
   }
-  if (lag <= 0 || lag != round(lag)) {
-    stop("lag must be a positive integer.")
+  if (!is.null(lag) && (length(lag) != 1 || !is.numeric(lag) || is.na(lag) ||
+    lag <= 0 || lag != round(lag))) {
+    stop("lag must be NULL or a positive integer.")
   }
-  if (!is.null(pelt_penalty) && (!is.numeric(pelt_penalty) || length(pelt_penalty) != 1)) {
-    stop("pelt_penalty must be a single numeric value or NULL.")
+  if (!is.null(pelt_penalty) &&
+    !(.is_valid_pelt_penalty_value(pelt_penalty))) {
+    stop(
+      "pelt_penalty must be NULL, a single positive numeric value, ",
+      "'bic', or 'mbic'."
+    )
   }
   
   message("Starting Winn correction...")
@@ -534,7 +566,10 @@ winn <- function(data,
       current_batch <- if (batch_option == "provided") {
         batch
       } else {
-        .auto_detect_batch(norm_data, pelt_penalty = pelt_penalty)
+        .auto_detect_batch(
+          norm_data,
+          pelt_penalty = pelt_penalty
+        )
       }
       
       for (current_test in tests) {
@@ -624,7 +659,15 @@ winn <- function(data,
                     best_final_data <- final_data
                     best_params <- list(
                       batch_option = batch_option,
+                      pelt_penalty = attr(current_batch, "pelt_penalty"),
                       test = current_test,
+                      lag = if (is.null(lag) && identical(current_test, "Ljung-Box")) {
+                        "adaptive"
+                      } else if (identical(current_test, "Ljung-Box")) {
+                        as.character(as.integer(lag))
+                      } else {
+                        "not used"
+                      },
                       spline_method = spline_method,
                       acorr_fdr = acorr_fdr,
                       anova_fdr = anova_fdr,
@@ -649,11 +692,17 @@ winn <- function(data,
     
     message("Optimal parameters selected based on control samples:")
     message("  Batch detection: ", best_params$batch_option)
+    if (identical(best_params$batch_option, "auto") && !is.null(best_params$pelt_penalty)) {
+      message("  fkPELT penalty: ", round(best_params$pelt_penalty, 4))
+    }
     message("  Autocorrelation test: ",
             best_params$test,
             " (FDR: ",
             best_params$acorr_fdr,
             ")")
+    if (identical(best_params$test, "Ljung-Box")) {
+      message("  Ljung-Box lag: ", best_params$lag)
+    }
     message("  Spline method: ", best_params$spline_method)
     message("  Batch correction FDR: ", best_params$anova_fdr)
     message("  Normalization: ", best_params$normalization)
@@ -670,8 +719,12 @@ winn <- function(data,
     # Use fixed parameters
     if (is.null(batch)) {
       message("No batch information provided. Auto-detecting segments using fkPELT...")
-      batch <- .auto_detect_batch(norm_data, pelt_penalty = pelt_penalty)
+      batch <- .auto_detect_batch(
+        norm_data,
+        pelt_penalty = pelt_penalty
+      )
       message("Auto-detected ", max(batch), " segments as batch.")
+      message("fkPELT penalty used: ", round(attr(batch, "pelt_penalty"), 4))
     } else {
       if (length(batch) != n_samples) {
         stop("Length of batch must match number of columns in data.")
@@ -686,6 +739,9 @@ winn <- function(data,
       fdr_threshold,
       "..."
     )
+    if (identical(test, "Ljung-Box") && is.null(lag)) {
+      message("Using adaptive Ljung-Box lag selection per batch segment.")
+    }
     drift_corrected <- autocorrelation_correct(
       norm_data,
       run_order = run_order,
@@ -742,24 +798,99 @@ winn <- function(data,
 # Internal Helper Functions (not exported)
 ###############################################################################
 
+.autocorrelation_model_df <- function(test) {
+  if (identical(test, "Ljung-Box")) {
+    return(1L)
+  }
+  0L
+}
+
+.resolve_autocorrelation_lag <- function(lag, n_obs, model_df = 0L) {
+  max_allowed_lag <- n_obs - 1L
+  min_required_lag <- model_df + 3L
+  if (max_allowed_lag < min_required_lag) {
+    return(NA_integer_)
+  }
+  if (is.null(lag)) {
+    lag <- min(10L, floor(n_obs / 5))
+  }
+  lag <- max(as.integer(lag), min_required_lag)
+  lag <- min(lag, max_allowed_lag)
+  as.integer(lag)
+}
+
+.is_valid_pelt_penalty_value <- function(pelt_penalty) {
+  if (is.numeric(pelt_penalty) && length(pelt_penalty) == 1L &&
+    !is.na(pelt_penalty) && pelt_penalty > 0) {
+    return(TRUE)
+  }
+  if (is.character(pelt_penalty) && length(pelt_penalty) == 1L) {
+    return(tolower(pelt_penalty) %in% c("bic", "mbic"))
+  }
+  FALSE
+}
+
+.make_batch_from_change_points <- function(change_points, n) {
+  tau <- c(0, change_points, n)
+  batch <- rep(NA_integer_, n)
+  for (i in seq_len(length(tau) - 1L)) {
+    batch[(tau[i] + 1L):tau[i + 1L]] <- i
+  }
+  batch
+}
+
+.make_fk_knots <- function(n) {
+  num_knots <- floor(n / 60) + 2
+  if (num_knots <= 2L) {
+    return(numeric(0))
+  }
+  knots <- seq(1, n, length.out = num_knots)
+  knots <- knots[-c(1, length(knots))]
+  ifelse(floor(knots) == knots, knots + 0.5, knots)
+}
+
+.estimate_segmentation_variance <- function(signal) {
+  diffs <- diff(signal)
+  sigma <- if (length(diffs) > 1L) {
+    mad(diffs, center = 0, constant = 1.4826, na.rm = TRUE)
+  } else {
+    sd(signal, na.rm = TRUE)
+  }
+  sigma <- max(sigma, .Machine$double.eps)
+  sigma^2
+}
+
+.resolve_pelt_penalty <- function(agg_signal, pelt_penalty = NULL) {
+  n <- length(agg_signal)
+  sigma2 <- .estimate_segmentation_variance(agg_signal)
+  bic_penalty <- sigma2 * log(max(n, 2L))
+  mbic_penalty <- 3 * log(max(n, 2L))
+  if (is.numeric(pelt_penalty)) {
+    return(as.numeric(pelt_penalty))
+  }
+  penalty_key <- if (is.null(pelt_penalty)) {
+    "mbic"
+  } else {
+    tolower(pelt_penalty)
+  }
+  if (identical(penalty_key, "bic")) {
+    return(bic_penalty)
+  }
+  mbic_penalty
+}
+
 .auto_detect_batch <- function(data, pelt_penalty = NULL) {
   # Auto-detect segments as batch using fkPELT based on aggregated median signal
   agg_signal <- apply(data, 2, median, na.rm = TRUE)
   n <- length(agg_signal)
-  num_knots <- floor(n / 60) + 2
-  if (num_knots > 2) {
-    knots <- seq(1, n, length.out = num_knots)
-    knots <- knots[-c(1, length(knots))]
-    knots <- ifelse(floor(knots) == knots, knots + 0.5, knots)
-  } else {
-    knots <- numeric(0)
-  }
-  change_points <- .fkPELT(agg_signal, knots, penalty = pelt_penalty)
-  tau <- c(0, change_points, n)
-  batch <- rep(NA, n)
-  for (i in seq_along(tau[-length(tau)])) {
-    batch[(tau[i] + 1):tau[i + 1]] <- i
-  }
+  knots <- .make_fk_knots(n)
+  resolved_penalty <- .resolve_pelt_penalty(
+    agg_signal = agg_signal,
+    pelt_penalty = pelt_penalty
+  )
+  change_points <- .fkPELT(agg_signal, knots, penalty = resolved_penalty)
+  batch <- .make_batch_from_change_points(change_points, n)
+  attr(batch, "pelt_penalty") <- resolved_penalty
   return(batch)
 }
 
@@ -837,7 +968,7 @@ winn <- function(data,
   # Try multiple approaches in order of conservatism
   # 1. P-splines with REML and gamma penalty
   fit <- tryCatch({
-    mgcv::gam(y ~ s(x, bs = "ps", k = k_max),
+    mgcv::gam(y ~ mgcv::s(x, bs = "ps", k = k_max),
               method = "REML",
               gamma = 1.4)  # Conservative gamma > 1
   }, error = function(e)
@@ -848,7 +979,7 @@ winn <- function(data,
   
   # 2. Thin plate splines with conservative settings
   fit <- tryCatch({
-    mgcv::gam(y ~ s(x, bs = "tp", k = k_max),
+    mgcv::gam(y ~ mgcv::s(x, bs = "tp", k = k_max),
               method = "REML",
               gamma = 1.2)
   }, error = function(e)
@@ -859,7 +990,7 @@ winn <- function(data,
   
   # 3. Cubic regression splines with fixed df (very conservative)
   fit <- tryCatch({
-    mgcv::gam(y ~ s(
+    mgcv::gam(y ~ mgcv::s(
       x,
       bs = "cr",
       k = min(6, k_max),
@@ -893,13 +1024,10 @@ winn <- function(data,
   if (is.null(data))
     stop("Data cannot be NULL in .fkPELT")
   n <- length(data)
-  if (is.null(penalty)) {
-    penalty <- 3 * log(max(n, 2))
-  }
   if (!is.numeric(penalty) || length(penalty) != 1 || penalty <= 0) {
     stop("penalty must be a single positive numeric value.")
   }
-  # penalty is inspired by BIC criterion but modified.
+  pruning_constant <- penalty
   f <- numeric(n + 1)
   f[1] <- -penalty
   cp <- vector("list", n + 1)
@@ -927,7 +1055,7 @@ winn <- function(data,
     cp[[t + 1]] <- c(cp[[t1 + 1]], t1)
     R[[t + 1]] <- numeric(0)
     for (r in seq_len(m)) {
-      tot <- f[R[[t]][r] + 1] + log(300) + neglog[r]
+      tot <- f[R[[t]][r] + 1] + pruning_constant + neglog[r]
       if (tot <= f[t + 1] && t < n) {
         R[[t + 1]] <- c(R[[t + 1]], R[[t]][r])
       }

@@ -43,7 +43,9 @@ these will be used for normalization and parameter tuning.}
 
 \item{remove_batch_effects}{A character string specifying the method for removing batch effects ("anova" or "combat").}
 
-\item{test}{A character string specifying the autocorrelation test ("Ljung-Box" or "DW").}
+\item{test}{A character vector specifying the autocorrelation test(s)
+to use. Fixed mode requires a single value. Auto mode evaluates only the
+supplied tests, so \code{DW} is included only when explicitly requested.}
 
 \item{lag}{An optional integer specifying the lag for the autocorrelation test.
 If \code{NULL}, \code{autocorrelation_correct()} selects the lag adaptively for each

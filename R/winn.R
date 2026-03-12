@@ -122,6 +122,260 @@ adjust_outliers_mad <- function(data) {
   x
 }
 
+.compute_drift_offsets <- function(segment, seg_run, spline_method) {
+  apply(segment, 1, function(x) {
+    log_seg <- log1p(x)
+    if (spline_method == "conservative") {
+      fit <- .fit_conservative_spline(log_seg, seg_run)
+    } else {
+      fit <- tryCatch(
+        mgcv::gam(log_seg ~ mgcv::s(seg_run, bs = "cr")),
+        error = function(e)
+          NULL
+      )
+    }
+    if (is.null(fit)) {
+      linear_fit <- lm(log_seg ~ seg_run)
+      linear_fit$fitted.values - mean(linear_fit$fitted.values)
+    } else {
+      fit$fitted.values - mean(fit$fitted.values)
+    }
+  })
+}
+
+.detrend_segment_rows <- function(segment, seg_run, spline_method) {
+  if (!nrow(segment)) {
+    return(segment)
+  }
+  spline_vals <- .compute_drift_offsets(segment, seg_run, spline_method)
+  z <- log1p(segment) - t(spline_vals)
+  .inv_log1p(z, clamp_nonneg = TRUE)
+}
+
+.compute_ljung_box_pvalues <- function(segment, segment_lag, model_df) {
+  if (is.na(segment_lag)) {
+    return(rep(NA_real_, nrow(segment)))
+  }
+  log_segment <- log1p(segment)
+  if (anyNA(log_segment)) {
+    return(apply(log_segment, 1, function(x_log) {
+      tryCatch(
+        Box.test(
+          x_log,
+          lag = segment_lag,
+          type = "Ljung-Box",
+          fitdf = model_df
+        )$p.value,
+        error = function(e)
+          NA_real_
+      )
+    }))
+  }
+  centered <- sweep(log_segment, 1, rowMeans(log_segment), "-")
+  denom <- rowSums(centered^2)
+  valid <- denom > .Machine$double.eps
+  if (!any(valid)) {
+    return(rep(NA_real_, nrow(segment)))
+  }
+  n_obs <- ncol(centered)
+  q_stat <- numeric(nrow(centered))
+  for (lag_idx in seq_len(segment_lag)) {
+    numer <- rowSums(
+      centered[, (lag_idx + 1):n_obs, drop = FALSE] *
+        centered[, seq_len(n_obs - lag_idx), drop = FALSE]
+    )
+    rho_sq <- numeric(length(numer))
+    rho_sq[valid] <- (numer[valid] / denom[valid])^2
+    q_stat <- q_stat + rho_sq / (n_obs - lag_idx)
+  }
+  q_stat <- n_obs * (n_obs + 2) * q_stat
+  p_vals <- rep(NA_real_, nrow(centered))
+  p_vals[valid] <- stats::pchisq(
+    q_stat[valid],
+    df = segment_lag - model_df,
+    lower.tail = FALSE
+  )
+  p_vals
+}
+
+.compute_segment_autocorrelation_pvalues <- function(segment,
+                                                     seg_run,
+                                                     test,
+                                                     segment_lag,
+                                                     model_df) {
+  if (identical(test, "Ljung-Box") && is.na(segment_lag)) {
+    return(rep(NA_real_, nrow(segment)))
+  }
+  if (identical(test, "DW") && !requireNamespace("lmtest", quietly = TRUE)) {
+    stop("Package 'lmtest' is required for DW test. Please install it.")
+  }
+  if (identical(test, "Ljung-Box")) {
+    return(p.adjust(
+      .compute_ljung_box_pvalues(
+        segment = segment,
+        segment_lag = segment_lag,
+        model_df = model_df
+      ),
+      method = "fdr"
+    ))
+  }
+  p_vals <- apply(segment, 1, function(x) {
+    x_log <- log1p(x)
+    if (test == "DW") {
+      tryCatch(
+        lmtest::dwtest(x_log ~ seg_run)$p.value,
+        error = function(e)
+          NA_real_
+      )
+    } else {
+      stop("Invalid test method. Use 'Ljung-Box' or 'DW'.")
+    }
+  })
+  p.adjust(p_vals, method = "fdr")
+}
+
+.prepare_autocorrelation_correction <- function(data,
+                                                run_order,
+                                                batch,
+                                                lag,
+                                                test,
+                                                detrend,
+                                                spline_method,
+                                                max_fdr_threshold) {
+  batch_vec <- batch
+  unique_batch <- unique(batch_vec)
+  prepared <- list(
+    data = data,
+    mode = detrend,
+    batches = vector("list", length(unique_batch))
+  )
+  for (i in seq_along(unique_batch)) {
+    b <- unique_batch[i]
+    idx <- which(batch_vec == b)
+    segment <- data[, idx, drop = FALSE]
+    seg_run <- if (!is.null(run_order)) run_order[idx] else seq_along(idx)
+    batch_info <- list(idx = idx)
+    if (detrend == "spline") {
+      batch_info$detrended <- .detrend_segment_rows(segment, seg_run, spline_method)
+    } else if (detrend == "mean") {
+      segment_n <- length(idx)
+      model_df <- .autocorrelation_model_df(test = test)
+      segment_lag <- .resolve_autocorrelation_lag(
+        lag = lag,
+        n_obs = segment_n,
+        model_df = model_df
+      )
+      adjusted_p <- .compute_segment_autocorrelation_pvalues(
+        segment = segment,
+        seg_run = seg_run,
+        test = test,
+        segment_lag = segment_lag,
+        model_df = model_df
+      )
+      candidate_ids <- which(adjusted_p < max_fdr_threshold)
+      batch_info$adjusted_p <- adjusted_p
+      batch_info$candidate_ids <- candidate_ids
+      batch_info$detrended <- if (length(candidate_ids) > 0) {
+        .detrend_segment_rows(
+          segment[candidate_ids, , drop = FALSE],
+          seg_run = seg_run,
+          spline_method = spline_method
+        )
+      } else {
+        segment[candidate_ids, , drop = FALSE]
+      }
+    } else {
+      stop("Invalid detrend method. Use 'mean' or 'spline'.")
+    }
+    prepared$batches[[i]] <- batch_info
+  }
+  prepared
+}
+
+.materialize_autocorrelation_correction <- function(prepared, fdr_threshold = NULL) {
+  corrected <- prepared$data
+  for (batch_info in prepared$batches) {
+    idx <- batch_info$idx
+    if (prepared$mode == "spline") {
+      corrected[, idx] <- batch_info$detrended
+      next
+    }
+    correct_ids <- which(batch_info$adjusted_p < fdr_threshold)
+    if (!length(correct_ids)) {
+      next
+    }
+    candidate_pos <- match(correct_ids, batch_info$candidate_ids, nomatch = 0L)
+    if (any(candidate_pos == 0L)) {
+      stop("Autocorrelation cache does not cover the requested threshold.")
+    }
+    corrected[correct_ids, idx] <- batch_info$detrended[candidate_pos, , drop = FALSE]
+  }
+  corrected
+}
+
+.materialize_autocorrelation_candidates <- function(prepared, thresholds) {
+  if (prepared$mode != "mean") {
+    return(list(list(
+      threshold = NA_real_,
+      thresholds = NA_real_,
+      matrix = .materialize_autocorrelation_correction(prepared, fdr_threshold = 1)
+    )))
+  }
+  ascending_thresholds <- sort(unique(thresholds))
+  current <- prepared$data
+  threshold_groups <- list()
+  matrices <- list()
+  sorted_group_ids <- integer(length(ascending_thresholds))
+  prev_threshold <- 0
+  last_group_id <- 0L
+  
+  for (i in seq_along(ascending_thresholds)) {
+    threshold_value <- ascending_thresholds[i]
+    added_any <- FALSE
+    for (batch_info in prepared$batches) {
+      if (!length(batch_info$candidate_ids)) {
+        next
+      }
+      candidate_p <- batch_info$adjusted_p[batch_info$candidate_ids]
+      new_positions <- which(candidate_p >= prev_threshold & candidate_p < threshold_value)
+      if (!length(new_positions)) {
+        next
+      }
+      current[
+        batch_info$candidate_ids[new_positions],
+        batch_info$idx
+      ] <- batch_info$detrended[new_positions, , drop = FALSE]
+      added_any <- TRUE
+    }
+    if (!added_any && last_group_id > 0L) {
+      sorted_group_ids[i] <- last_group_id
+      threshold_groups[[last_group_id]] <- c(threshold_groups[[last_group_id]], threshold_value)
+    } else {
+      last_group_id <- last_group_id + 1L
+      sorted_group_ids[i] <- last_group_id
+      threshold_groups[[last_group_id]] <- threshold_value
+      matrices[[last_group_id]] <- current
+    }
+    prev_threshold <- threshold_value
+  }
+  
+  candidates <- list()
+  seen_groups <- integer(0)
+  for (threshold_value in thresholds) {
+    group_id <- sorted_group_ids[match(threshold_value, ascending_thresholds)]
+    if (group_id %in% seen_groups) {
+      next
+    }
+    seen_groups <- c(seen_groups, group_id)
+    candidates[[length(candidates) + 1L]] <- list(
+      threshold = threshold_value,
+      thresholds = threshold_groups[[group_id]],
+      matrix = matrices[[group_id]]
+    )
+  }
+  candidates
+}
+
 #' Correct for Drift in Data Using Autocorrelation Correction
 #'
 #' This function corrects for drift effects in metabolomics data by detrending based on run order within each batch segment.
@@ -159,105 +413,24 @@ autocorrelation_correct <- function(data,
   if (is.null(batch) || length(batch) != ncol(data)) {
     stop("batch vector must be provided and its length must equal number of columns in data.")
   }
+  if (!identical(test, "Ljung-Box") && !identical(test, "DW")) {
+    stop("test must be either 'Ljung-Box' or 'DW'.")
+  }
   if (!is.null(lag) && (length(lag) != 1 || !is.numeric(lag) || is.na(lag) ||
     lag <= 0 || lag != round(lag))) {
     stop("lag must be NULL or a positive integer.")
   }
-  
-  detrended_data <- data
-  batch_vec <- batch
-  unique_batch <- unique(batch_vec)
-  
-  for (b in unique_batch) {
-    idx <- which(batch_vec == b)
-    segment <- data[, idx, drop = FALSE]
-    segment_n <- length(idx)
-    model_df <- .autocorrelation_model_df(test = test)
-    segment_lag <- .resolve_autocorrelation_lag(
-      lag = lag,
-      n_obs = segment_n,
-      model_df = model_df
-    )
-    seg_run <- if (!is.null(run_order)) run_order[idx] else seq_along(idx)
-    if (detrend == "spline") {
-      spline_vals <- apply(segment, 1, function(x) {
-        log_seg <- log1p(x)
-        if (spline_method == "conservative") {
-          fit <- .fit_conservative_spline(log_seg, seg_run)
-        } else {
-          fit <- tryCatch(
-            mgcv::gam(log_seg ~ mgcv::s(seg_run, bs = "cr")),
-            error = function(e)
-              NULL
-          )
-        }
-        if (is.null(fit))
-          lm(log_seg ~ seg_run)$fitted.values - mean(lm(log_seg ~ seg_run)$fitted.values)
-        else
-          (fit$fitted.values - mean(fit$fitted.values))
-      })
-      z <- log1p(data[, idx, drop = FALSE]) - t(spline_vals)
-      detrended_data[, idx] <- .inv_log1p(z, clamp_nonneg = TRUE)
-    } else if (detrend == "mean") {
-      # Use log1p-transformed data for autocorrelation testing (consistent with detrending)
-      p_vals <- apply(segment, 1, function(x) {
-        x_log <- log1p(x)
-        if (test == "Ljung-Box") {
-          if (is.na(segment_lag)) {
-            return(NA_real_)
-          }
-          tryCatch(
-            Box.test(
-              x_log,
-              lag = segment_lag,
-              type = "Ljung-Box",
-              fitdf = model_df
-            )$p.value,
-            error = function(e)
-              NA
-          )
-        } else if (test == "DW") {
-          if (!requireNamespace("lmtest", quietly = TRUE)) {
-            stop("Package 'lmtest' is required for DW test. Please install it.")
-          }
-          tryCatch(
-            lmtest::dwtest(x_log ~ seg_run)$p.value,
-            error = function(e)
-              NA
-          )
-        } else {
-          stop("Invalid test method. Use 'Ljung-Box' or 'DW'.")
-        }
-      })
-      p_vals <- p.adjust(p_vals, method = "fdr")
-      correct_ids <- which(p_vals < fdr_threshold)
-      if (length(correct_ids) > 0) {
-        spline_vals <- apply(segment[correct_ids, , drop = FALSE], 1, function(x) {
-          log_seg <- log1p(x)
-          if (spline_method == "conservative") {
-            fit <- .fit_conservative_spline(log_seg, seg_run)
-          } else {
-            fit <- tryCatch(
-              mgcv::gam(log_seg ~ mgcv::s(seg_run, bs = "cr")),
-              error = function(e)
-                NULL
-            )
-          }
-          if (is.null(fit))
-            lm(log_seg ~ seg_run)$fitted.values - mean(lm(log_seg ~ seg_run)$fitted.values)
-          else
-            (fit$fitted.values - mean(fit$fitted.values))
-        })
-        z <- log1p(data[correct_ids, idx, drop = FALSE]) - t(spline_vals)
-        detrended_data[correct_ids, idx] <- .inv_log1p(z, clamp_nonneg = TRUE)
-      }
-      non_correct_ids <- setdiff(seq_len(nrow(data)), correct_ids)
-      if (length(non_correct_ids) > 0) {
-        detrended_data[non_correct_ids, idx] <- data[non_correct_ids, idx]
-      }
-    }
-  }
-  return(detrended_data)
+  prepared <- .prepare_autocorrelation_correction(
+    data = data,
+    run_order = run_order,
+    batch = batch,
+    lag = lag,
+    test = test,
+    detrend = detrend,
+    spline_method = spline_method,
+    max_fdr_threshold = if (detrend == "mean") fdr_threshold else 1
+  )
+  .materialize_autocorrelation_correction(prepared, fdr_threshold = fdr_threshold)
 }
 
 #' Perform ANOVA-based Mean-Only Batch Correction
@@ -287,29 +460,8 @@ anova_batch_correction <- function(data, batch, fdr_threshold = 0.05) {
     message("Only one batch detected. Skipping ANOVA-based correction.")
     return(data)
   }
-  z <- log1p(data)
-  n_met <- nrow(z)
-  pvals <- numeric(n_met)
-  for (i in seq_len(n_met)) {
-    df <- data.frame(value = z[i, ], batch = batch)
-    a <- aov(value ~ batch, data = df)
-    pvals[i] <- summary(a)[[1]]$`Pr(>F)`[1]
-  }
-  padj <- p.adjust(pvals, method = "fdr")
-  
-  corrected <- z
-  sig <- which(padj < fdr_threshold)
-  if (length(sig) > 0) {
-    overall_means <- rowMeans(z, na.rm = TRUE)
-    for (i in sig) {
-      # compute batch-specific and overall means
-      batch_means <- tapply(z[i, ], batch, mean, na.rm = TRUE)
-      shift <- batch_means - overall_means[i]
-      # subtract the shift for each sample
-      corrected[i, ] <- z[i, ] - shift[as.character(batch)]
-    }
-  }
-  return(.inv_log1p(corrected, clamp_nonneg = TRUE))
+  prepared <- .prepare_anova_batch_correction(data, batch)
+  .materialize_anova_batch_correction(prepared, fdr_threshold = fdr_threshold)
 }
 
 #' Perform ComBat Batch Correction by batch
@@ -428,7 +580,9 @@ scale_by_batch <- function(data, batch) {
 #' @param detrend_non_autocorrelated A character string specifying the method for detrending non-autocorrelated metabolites ("mean" or "spline").
 #' @param spline_method A character string specifying the spline method when detrend="spline" ("conservative" for robust drift removal or "standard" for traditional approach).
 #' @param remove_batch_effects A character string specifying the method for removing batch effects ("anova" or "combat").
-#' @param test A character string specifying the autocorrelation test ("Ljung-Box" or "DW").
+#' @param test A character vector specifying the autocorrelation test(s)
+#' to use. Fixed mode requires a single value. Auto mode evaluates only the
+#' supplied tests, so `DW` is included only when explicitly requested.
 #' @param lag An optional integer specifying the lag for the autocorrelation test.
 #' If `NULL`, `autocorrelation_correct()` selects the lag adaptively for each
 #' batch segment.
@@ -506,8 +660,11 @@ winn <- function(data,
   if (!remove_batch_effects %in% c("anova", "combat")) {
     stop("remove_batch_effects must be either 'anova' or 'combat'.")
   }
-  if (!test %in% c("Ljung-Box", "DW")) {
-    stop("test must be either 'Ljung-Box' or 'DW'.")
+  if (!is.character(test) || length(test) < 1L || any(!test %in% c("Ljung-Box", "DW"))) {
+    stop("test must contain only 'Ljung-Box' and/or 'DW'.")
+  }
+  if (parameters == "fixed" && length(test) != 1L) {
+    stop("test must be length 1 when parameters = 'fixed'.")
   }
   
   if (fdr_threshold <= 0 || fdr_threshold >= 1) {
@@ -541,10 +698,23 @@ winn <- function(data,
       c("provided")
     else
       c("auto")
-    tests <- c("Ljung-Box", "DW")
+    tests <- unique(test)
+    if (detrend_non_autocorrelated == "spline") {
+      tests <- tests[1]
+    }
     normalizations <- c("shrink", "normalize")
     acorr_fdr_options <- c(0.1, 0.05, 0.01)
     anova_fdr_options <- c(0.1, 0.05, 0.01)
+    drift_fdr_grid <- if (detrend_non_autocorrelated == "mean") {
+      acorr_fdr_options
+    } else {
+      NA_real_
+    }
+    batch_fdr_grid <- if (remove_batch_effects == "anova") {
+      anova_fdr_options
+    } else {
+      NA_real_
+    }
     scale_options <- if (scale_by_batch) {
       c(TRUE)
     } else {
@@ -558,7 +728,7 @@ winn <- function(data,
     
     # Progress tracking for parameter optimization
     total_combinations <- length(batch_options) * length(tests) * length(spline_methods) *
-      length(acorr_fdr_options) * length(anova_fdr_options) *
+      length(drift_fdr_grid) * length(batch_fdr_grid) *
       length(normalizations) * length(scale_options)
     current_combination <- 0
     
@@ -573,41 +743,74 @@ winn <- function(data,
       }
       
       for (current_test in tests) {
-        for (spline_method in spline_methods) {
-          for (acorr_fdr in acorr_fdr_options) {
-            # Drift correction with current autocorrelation parameters
-            drift_corrected <- tryCatch({
-              autocorrelation_correct(
-                norm_data,
-                run_order = run_order,
-                batch = current_batch,
-                lag = lag,
-                test = current_test,
-                detrend = detrend_non_autocorrelated,
-                fdr_threshold = acorr_fdr,
-                spline_method = spline_method
-              )
-            }, error = function(e) {
-              # Silently skip failed parameter combinations during optimization
-              return(NULL)
-            })
+        for (current_spline_method in spline_methods) {
+          prepared_drift <- tryCatch({
+            .prepare_autocorrelation_correction(
+              data = norm_data,
+              run_order = run_order,
+              batch = current_batch,
+              lag = lag,
+              test = current_test,
+              detrend = detrend_non_autocorrelated,
+              spline_method = current_spline_method,
+              max_fdr_threshold = if (detrend_non_autocorrelated == "mean") {
+                max(acorr_fdr_options)
+              } else {
+                1
+              }
+            )
+          }, error = function(e) {
+            NULL
+          })
+          
+          if (is.null(prepared_drift))
+            next
+          
+          drift_candidates <- .materialize_autocorrelation_candidates(
+            prepared_drift,
+            thresholds = if (prepared_drift$mode == "mean") {
+              acorr_fdr_options
+            } else {
+              NA_real_
+            }
+          )
+          
+          for (drift_candidate in drift_candidates) {
+            acorr_fdr <- drift_candidate$threshold
+            drift_corrected <- drift_candidate$matrix
             
-            if (is.null(drift_corrected))
+            if (remove_batch_effects == "anova") {
+              prepared_batch <- tryCatch({
+                .prepare_anova_batch_correction(drift_corrected, current_batch)
+              }, error = function(e) {
+                NULL
+              })
+              
+              if (is.null(prepared_batch))
+                next
+              
+              batch_candidates <- .materialize_anova_candidates(
+                prepared_batch,
+                thresholds = anova_fdr_options
+              )
+            } else {
+              batch_candidates <- list(list(
+                threshold = NA_real_,
+                thresholds = NA_real_,
+                matrix = tryCatch({
+                  combat_batch_correction(drift_corrected, current_batch)
+                }, error = function(e) {
+                  NULL
+                })
+              ))
+            }
+            
+            if (is.null(batch_candidates[[1]]$matrix))
               next
             
-            for (anova_fdr in anova_fdr_options) {
-              # Batch effect correction with current ANOVA FDR
-              batch_corrected <- tryCatch({
-                if (remove_batch_effects == "anova") {
-                  anova_batch_correction(drift_corrected,
-                                         current_batch,
-                                         fdr_threshold = anova_fdr)
-                } else {
-                  combat_batch_correction(drift_corrected, current_batch)
-                }
-              }, error = function(e) {
-                return(NULL)
-              })
+            for (batch_candidate in batch_candidates) {
+              batch_corrected <- batch_candidate$matrix
+              anova_fdr <- batch_candidate$threshold
               
               if (is.null(batch_corrected))
                 next
@@ -620,7 +823,7 @@ winn <- function(data,
                     control_samples = control_samples
                   )
                 }, error = function(e) {
-                  return(NULL)
+                  NULL
                 })
                 
                 if (is.null(normalized_data))
@@ -649,7 +852,6 @@ winn <- function(data,
                     normalized_data
                   }
                   
-                  # Calculate quality metrics
                   quality_metrics <- .calculate_quality_score(final_data, control_samples)
                   if (is.na(quality_metrics$score))
                     next
@@ -668,9 +870,17 @@ winn <- function(data,
                       } else {
                         "not used"
                       },
-                      spline_method = spline_method,
-                      acorr_fdr = acorr_fdr,
-                      anova_fdr = anova_fdr,
+                      spline_method = current_spline_method,
+                      acorr_fdr = if (prepared_drift$mode == "mean") {
+                        acorr_fdr
+                      } else {
+                        "not used"
+                      },
+                      anova_fdr = if (remove_batch_effects == "anova") {
+                        anova_fdr
+                      } else {
+                        "not used"
+                      },
                       normalization = normalize_opts,
                       scale_by_batch = scale_opt,
                       quality_score = quality_metrics$score,
@@ -817,6 +1027,147 @@ winn <- function(data,
   lag <- max(as.integer(lag), min_required_lag)
   lag <- min(lag, max_allowed_lag)
   as.integer(lag)
+}
+
+.compute_batch_anova_pvalues <- function(z, batch) {
+  batch <- factor(batch)
+  n_groups <- nlevels(batch)
+  n_samples <- ncol(z)
+  if (n_groups < 2L || n_samples <= n_groups) {
+    return(rep(1, nrow(z)))
+  }
+  if (anyNA(z)) {
+    pvals <- rep(1, nrow(z))
+    for (i in seq_len(nrow(z))) {
+      keep <- !is.na(z[i, ])
+      y <- z[i, keep]
+      batch_i <- droplevels(batch[keep])
+      group_count <- nlevels(batch_i)
+      if (group_count < 2L || length(y) <= group_count) {
+        next
+      }
+      design <- model.matrix(~ batch_i)
+      fit <- stats::lm.fit(design, y)
+      rss_full <- sum(fit$residuals^2)
+      rss_null <- sum((y - mean(y))^2)
+      df1 <- ncol(design) - 1L
+      df2 <- length(y) - ncol(design)
+      if (df1 <= 0L || df2 <= 0L) {
+        next
+      }
+      if (rss_full <= .Machine$double.eps) {
+        pvals[i] <- if (rss_null <= .Machine$double.eps) 1 else 0
+        next
+      }
+      f_stat <- ((rss_null - rss_full) / df1) / (rss_full / df2)
+      pvals[i] <- stats::pf(f_stat, df1, df2, lower.tail = FALSE)
+    }
+    return(pvals)
+  }
+  group_indices <- split(seq_len(n_samples), batch)
+  group_sizes <- lengths(group_indices)
+  group_means <- vapply(
+    group_indices,
+    function(idx) rowMeans(z[, idx, drop = FALSE], na.rm = TRUE),
+    numeric(nrow(z))
+  )
+  if (!is.matrix(group_means)) {
+    group_means <- matrix(group_means, ncol = 1L)
+  }
+  overall_means <- rowMeans(z, na.rm = TRUE)
+  centered_means <- sweep(group_means, 1, overall_means, "-")
+  ss_between <- rowSums(sweep(centered_means^2, 2, group_sizes, "*"))
+  ss_within <- numeric(nrow(z))
+  for (j in seq_along(group_indices)) {
+    idx <- group_indices[[j]]
+    residuals <- z[, idx, drop = FALSE] - group_means[, j]
+    ss_within <- ss_within + rowSums(residuals^2)
+  }
+  df1 <- n_groups - 1L
+  df2 <- n_samples - n_groups
+  f_stat <- (ss_between / df1) / (ss_within / df2)
+  stable <- ss_within <= .Machine$double.eps
+  f_stat[stable & ss_between <= .Machine$double.eps] <- 0
+  f_stat[stable & ss_between > .Machine$double.eps] <- Inf
+  stats::pf(f_stat, df1, df2, lower.tail = FALSE)
+}
+
+.prepare_anova_batch_correction <- function(data, batch) {
+  z <- log1p(data)
+  batch <- factor(batch)
+  group_indices <- split(seq_len(ncol(z)), batch)
+  group_means <- vapply(
+    group_indices,
+    function(idx) rowMeans(z[, idx, drop = FALSE], na.rm = TRUE),
+    numeric(nrow(z))
+  )
+  if (!is.matrix(group_means)) {
+    group_means <- matrix(group_means, ncol = 1L)
+  }
+  overall_means <- rowMeans(z, na.rm = TRUE)
+  corrected_all <- z
+  for (j in seq_along(group_indices)) {
+    idx <- group_indices[[j]]
+    corrected_all[, idx] <- z[, idx, drop = FALSE] - group_means[, j] + overall_means
+  }
+  list(
+    original = z,
+    corrected_all = corrected_all,
+    padj = p.adjust(.compute_batch_anova_pvalues(z, batch), method = "fdr")
+  )
+}
+
+.materialize_anova_batch_correction <- function(prepared, fdr_threshold) {
+  corrected <- prepared$original
+  sig <- which(prepared$padj < fdr_threshold)
+  if (length(sig) > 0) {
+    corrected[sig, ] <- prepared$corrected_all[sig, , drop = FALSE]
+  }
+  .inv_log1p(corrected, clamp_nonneg = TRUE)
+}
+
+.materialize_anova_candidates <- function(prepared, thresholds) {
+  ascending_thresholds <- sort(unique(thresholds))
+  current <- prepared$original
+  threshold_groups <- list()
+  matrices <- list()
+  sorted_group_ids <- integer(length(ascending_thresholds))
+  prev_threshold <- 0
+  last_group_id <- 0L
+  
+  for (i in seq_along(ascending_thresholds)) {
+    threshold_value <- ascending_thresholds[i]
+    new_sig <- which(prepared$padj >= prev_threshold & prepared$padj < threshold_value)
+    if (!length(new_sig) && last_group_id > 0L) {
+      sorted_group_ids[i] <- last_group_id
+      threshold_groups[[last_group_id]] <- c(threshold_groups[[last_group_id]], threshold_value)
+    } else {
+      if (length(new_sig)) {
+        current[new_sig, ] <- prepared$corrected_all[new_sig, , drop = FALSE]
+      }
+      last_group_id <- last_group_id + 1L
+      sorted_group_ids[i] <- last_group_id
+      threshold_groups[[last_group_id]] <- threshold_value
+      matrices[[last_group_id]] <- .inv_log1p(current, clamp_nonneg = TRUE)
+    }
+    prev_threshold <- threshold_value
+  }
+  
+  candidates <- list()
+  seen_groups <- integer(0)
+  for (threshold_value in thresholds) {
+    group_id <- sorted_group_ids[match(threshold_value, ascending_thresholds)]
+    if (group_id %in% seen_groups) {
+      next
+    }
+    seen_groups <- c(seen_groups, group_id)
+    candidates[[length(candidates) + 1L]] <- list(
+      threshold = threshold_value,
+      thresholds = threshold_groups[[group_id]],
+      matrix = matrices[[group_id]]
+    )
+  }
+  candidates
 }
 
 .is_valid_pelt_penalty_value <- function(pelt_penalty) {

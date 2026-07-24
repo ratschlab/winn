@@ -4,7 +4,13 @@
 \alias{anova_batch_correction}
 \title{Perform ANOVA-based Mean-Only Batch Correction}
 \usage{
-anova_batch_correction(data, batch, fdr_threshold = 0.05)
+anova_batch_correction(
+  data,
+  batch,
+  fdr_threshold = 0.05,
+  gate = c("selective", "all", "none"),
+  return_diagnostics = FALSE
+)
 }
 \arguments{
 \item{data}{A numeric matrix (metabolites × samples).}
@@ -12,9 +18,16 @@ anova_batch_correction(data, batch, fdr_threshold = 0.05)
 \item{batch}{A factor or numeric vector indicating batch for each sample.}
 
 \item{fdr_threshold}{Significance threshold for FDR-adjusted p-values.}
+
+\item{gate}{Batch gate mode: \code{"selective"} (default), \code{"all"}, or
+\code{"none"}.}
+
+\item{return_diagnostics}{Logical; if \code{TRUE}, return feature-level test and
+correction diagnostics together with the corrected matrix.}
 }
 \value{
-A numeric matrix of corrected intensities.
+A numeric matrix of corrected intensities, or a list containing the
+matrix and diagnostics when \code{return_diagnostics = TRUE}.
 }
 \description{
 This function runs an ANOVA test on each metabolite to detect batch effects,

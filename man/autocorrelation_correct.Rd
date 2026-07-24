@@ -12,7 +12,9 @@ autocorrelation_correct(
   test = "Ljung-Box",
   detrend = "mean",
   fdr_threshold = 0.05,
-  spline_method = "conservative"
+  spline_method = "conservative",
+  gate = NULL,
+  return_diagnostics = FALSE
 )
 }
 \arguments{
@@ -33,9 +35,17 @@ If \code{NULL}, the lag is selected adaptively for each batch segment using
 \item{fdr_threshold}{A numeric value specifying the FDR threshold for significance.}
 
 \item{spline_method}{A character string specifying the spline method when detrend="spline" ("conservative" or "standard").}
+
+\item{gate}{Optional gate mode: \code{"selective"}, \code{"all"}, or \code{"none"}.
+When \code{NULL}, the historical behavior is retained: \code{detrend = "mean"} is
+selective and \code{detrend = "spline"} corrects all testable profiles.}
+
+\item{return_diagnostics}{Logical; if \code{TRUE}, return profile-level test and
+correction diagnostics together with the corrected matrix.}
 }
 \value{
-A numeric matrix with drift corrected.
+A numeric matrix with drift corrected, or a list containing the
+matrix and diagnostics when \code{return_diagnostics = TRUE}.
 }
 \description{
 This function corrects for drift effects in metabolomics data by detrending based on run order within each batch segment.

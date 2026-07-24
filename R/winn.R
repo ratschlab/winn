@@ -11,7 +11,10 @@
 #' @param processing A character string specifying the processing method to use. Options are "shrink" (default) or "normalize".
 #' @param control_samples An optional numeric vector specifying which columns correspond to control samples.
 #' If provided, the reference spectrum is calculated using only these samples.
-#' @return A numeric matrix of normalized intensities.
+#' @param return_diagnostics Logical; if `TRUE`, return the corrected matrix and
+#' sample-level dilution diagnostics in a list.
+#' @return A numeric matrix of normalized intensities, or a list containing the
+#' matrix and diagnostics when `return_diagnostics = TRUE`.
 #' @examples
 #' # Example usage:
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
@@ -19,7 +22,8 @@
 #' @export
 normalize_by_dilution_factor <- function(data,
                                          processing = "shrink",
-                                         control_samples = NULL) {
+                                         control_samples = NULL,
+                                         return_diagnostics = FALSE) {
   if (!is.matrix(data) && !is.data.frame(data)) {
     stop("Input data must be a matrix or data frame.")
   }
@@ -38,30 +42,64 @@ normalize_by_dilution_factor <- function(data,
   
   mean_dilution <- mean(dilution_factors, na.rm = TRUE)
   stdev_dilution <- sd(dilution_factors, na.rm = TRUE)
+  lower_threshold <- mean_dilution - stdev_dilution
+  upper_threshold <- mean_dilution + stdev_dilution
   
   normalized_data <- data
+  scaling_factors <- rep(1, length(dilution_factors))
   if (processing == "shrink") {
     for (i in seq_along(dilution_factors)) {
-      if (dilution_factors[i] < (mean_dilution - stdev_dilution)) {
+      if (dilution_factors[i] < lower_threshold) {
+        scaling_factors[i] <- lower_threshold / dilution_factors[i]
         normalized_data[, i] <- (normalized_data[, i] / dilution_factors[i]) *
-          (mean_dilution - stdev_dilution)
+          lower_threshold
       }
-      if (dilution_factors[i] > (mean_dilution + stdev_dilution)) {
+      if (dilution_factors[i] > upper_threshold) {
+        scaling_factors[i] <- upper_threshold / dilution_factors[i]
         normalized_data[, i] <- (normalized_data[, i] / dilution_factors[i]) *
-          (mean_dilution + stdev_dilution)
+          upper_threshold
       }
     }
   } else if (processing == "normalize") {
     for (i in seq_along(dilution_factors)) {
+      scaling_factors[i] <- 1 / dilution_factors[i]
       normalized_data[, i] <- normalized_data[, i] / dilution_factors[i]
     }
   }
-  return(normalized_data)
+  if (!isTRUE(return_diagnostics)) {
+    return(normalized_data)
+  }
+
+  sample_ids <- colnames(data)
+  if (is.null(sample_ids)) {
+    sample_ids <- paste0("sample_", seq_len(ncol(data)))
+  }
+  changed <- vapply(seq_len(ncol(data)), function(i) {
+    any(abs(normalized_data[, i] - data[, i]) > 1e-12, na.rm = TRUE)
+  }, logical(1))
+  diagnostics <- data.frame(
+    sample_id = sample_ids,
+    dilution_factor = as.numeric(dilution_factors),
+    lower_threshold = lower_threshold,
+    upper_threshold = upper_threshold,
+    altered = changed,
+    scaling_factor = as.numeric(scaling_factors),
+    reference_spectrum_type = if (is.null(control_samples)) "all_samples_median" else "control_samples_median",
+    processing = processing,
+    stringsAsFactors = FALSE
+  )
+  list(data = normalized_data, diagnostics = diagnostics)
 }
 
 #' Adjust Outliers in Data Matrix Using MAD
 #'
-#' This function adjusts outliers in a data matrix on a per-metabolite basis using the Median Absolute Deviation (MAD).
+#' This function adjusts outliers in a data matrix on a per-metabolite basis
+#' using the median absolute deviation (MAD). The policy is intentionally
+#' directional and single-tail: upper-tail values are shrunk whenever upper
+#' flags are present; lower-tail values are processed only when no upper-tail
+#' flags are present. Thus, for a feature with extremes in both tails, the
+#' upper-tail values are adjusted and the lower-tail values remain unchanged.
+#' High- and low-intensity extremes are not treated as equivalent.
 #'
 #' @param data A numeric matrix or data frame where rows represent metabolites and columns represent samples.
 #' @return A numeric matrix with adjusted outliers.
@@ -136,7 +174,13 @@ adjust_outliers_mad <- function(data) {
 #' @param detrend A character string indicating the method for detrending ("mean" or "spline").
 #' @param fdr_threshold A numeric value specifying the FDR threshold for significance.
 #' @param spline_method A character string specifying the spline method when detrend="spline" ("conservative" or "standard").
-#' @return A numeric matrix with drift corrected.
+#' @param gate Optional gate mode: `"selective"`, `"all"`, or `"none"`.
+#' When `NULL`, the historical behavior is retained: `detrend = "mean"` is
+#' selective and `detrend = "spline"` corrects all testable profiles.
+#' @param return_diagnostics Logical; if `TRUE`, return profile-level test and
+#' correction diagnostics together with the corrected matrix.
+#' @return A numeric matrix with drift corrected, or a list containing the
+#' matrix and diagnostics when `return_diagnostics = TRUE`.
 #' @examples
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' batch <- rep(1:4, length.out = ncol(your_data_matrix))
@@ -150,7 +194,9 @@ autocorrelation_correct <- function(data,
                                     test = "Ljung-Box",
                                     detrend = "mean",
                                     fdr_threshold = 0.05,
-                                    spline_method = "conservative") {
+                                    spline_method = "conservative",
+                                    gate = NULL,
+                                    return_diagnostics = FALSE) {
   if (!is.matrix(data))
     stop("Data must be a numeric matrix.")
   if (!is.null(run_order) && length(run_order) != ncol(data)) {
@@ -163,12 +209,29 @@ autocorrelation_correct <- function(data,
     lag <= 0 || lag != round(lag))) {
     stop("lag must be NULL or a positive integer.")
   }
+  if (!detrend %in% c("mean", "spline")) {
+    stop("detrend must be either 'mean' or 'spline'.")
+  }
+  if (!spline_method %in% c("conservative", "standard")) {
+    stop("spline_method must be either 'conservative' or 'standard'.")
+  }
+  legacy_all <- is.null(gate) && identical(detrend, "spline")
+  if (is.null(gate)) {
+    gate <- if (identical(detrend, "spline")) "all" else "selective"
+  }
+  gate <- match.arg(gate, c("selective", "all", "none"))
   
   detrended_data <- data
   batch_vec <- batch
   unique_batch <- unique(batch_vec)
+  feature_ids <- rownames(data)
+  if (is.null(feature_ids)) {
+    feature_ids <- paste0("feature_", seq_len(nrow(data)))
+  }
+  diagnostic_rows <- vector("list", length(unique_batch))
   
-  for (b in unique_batch) {
+  for (batch_index in seq_along(unique_batch)) {
+    b <- unique_batch[[batch_index]]
     idx <- which(batch_vec == b)
     segment <- data[, idx, drop = FALSE]
     segment_n <- length(idx)
@@ -179,28 +242,9 @@ autocorrelation_correct <- function(data,
       model_df = model_df
     )
     seg_run <- if (!is.null(run_order)) run_order[idx] else seq_along(idx)
-    if (detrend == "spline") {
-      spline_vals <- apply(segment, 1, function(x) {
-        log_seg <- log1p(x)
-        if (spline_method == "conservative") {
-          fit <- .fit_conservative_spline(log_seg, seg_run)
-        } else {
-          fit <- tryCatch(
-            mgcv::gam(log_seg ~ mgcv::s(seg_run, bs = "cr")),
-            error = function(e)
-              NULL
-          )
-        }
-        if (is.null(fit))
-          lm(log_seg ~ seg_run)$fitted.values - mean(lm(log_seg ~ seg_run)$fitted.values)
-        else
-          (fit$fitted.values - mean(fit$fitted.values))
-      })
-      z <- log1p(data[, idx, drop = FALSE]) - t(spline_vals)
-      detrended_data[, idx] <- .inv_log1p(z, clamp_nonneg = TRUE)
-    } else if (detrend == "mean") {
-      # Use log1p-transformed data for autocorrelation testing (consistent with detrending)
-      p_vals <- apply(segment, 1, function(x) {
+    p_values <- rep(NA_real_, nrow(segment))
+    if (!identical(gate, "none")) {
+      p_values <- apply(segment, 1, function(x) {
         x_log <- log1p(x)
         if (test == "Ljung-Box") {
           if (is.na(segment_lag)) {
@@ -213,8 +257,7 @@ autocorrelation_correct <- function(data,
               type = "Ljung-Box",
               fitdf = model_df
             )$p.value,
-            error = function(e)
-              NA
+            error = function(e) NA_real_
           )
         } else if (test == "DW") {
           if (!requireNamespace("lmtest", quietly = TRUE)) {
@@ -222,42 +265,140 @@ autocorrelation_correct <- function(data,
           }
           tryCatch(
             lmtest::dwtest(x_log ~ seg_run)$p.value,
-            error = function(e)
-              NA
+            error = function(e) NA_real_
           )
         } else {
           stop("Invalid test method. Use 'Ljung-Box' or 'DW'.")
         }
       })
-      p_vals <- p.adjust(p_vals, method = "fdr")
-      correct_ids <- which(p_vals < fdr_threshold)
-      if (length(correct_ids) > 0) {
-        spline_vals <- apply(segment[correct_ids, , drop = FALSE], 1, function(x) {
-          log_seg <- log1p(x)
-          if (spline_method == "conservative") {
-            fit <- .fit_conservative_spline(log_seg, seg_run)
-          } else {
-            fit <- tryCatch(
-              mgcv::gam(log_seg ~ mgcv::s(seg_run, bs = "cr")),
-              error = function(e)
-                NULL
+    }
+    adjusted_values <- p.adjust(p_values, method = "fdr")
+    testable <- is.finite(p_values)
+    selective_decision <- testable & is.finite(adjusted_values) &
+      adjusted_values < fdr_threshold
+    requested_correction <- switch(
+      gate,
+      selective = selective_decision,
+      all = if (isTRUE(legacy_all)) rep(TRUE, nrow(segment)) else testable,
+      none = rep(FALSE, nrow(segment))
+    )
+
+    actual_correction <- rep(FALSE, nrow(segment))
+    decision_reason <- ifelse(
+      !testable & !identical(gate, "none") & !isTRUE(legacy_all),
+      "not_testable",
+      ifelse(requested_correction,
+        if (identical(gate, "all")) "forced_all" else "selected",
+        "not_selected"
+      )
+    )
+    smoother_type <- rep(NA_character_, nrow(segment))
+    basis_dimension <- rep(NA_real_, nrow(segment))
+    effective_df <- rep(NA_real_, nrow(segment))
+    fallback_path <- rep(NA_character_, nrow(segment))
+    warning_status <- rep(FALSE, nrow(segment))
+    warning_message <- rep("", nrow(segment))
+    correction_magnitude <- rep(0, nrow(segment))
+
+    correct_ids <- which(requested_correction)
+    for (feature_index in correct_ids) {
+      log_seg <- log1p(segment[feature_index, ])
+      fit <- if (identical(spline_method, "conservative")) {
+        .fit_conservative_spline(log_seg, seg_run)
+      } else {
+        standard_fit <- tryCatch(
+          mgcv::gam(log_seg ~ mgcv::s(seg_run, bs = "cr")),
+          error = function(e) NULL
+        )
+        if (is.null(standard_fit)) {
+          standard_fit <- tryCatch(lm(log_seg ~ seg_run), error = function(e) NULL)
+          if (!is.null(standard_fit)) {
+            standard_fit <- .tag_spline_fit(
+              standard_fit,
+              smoother_type = "linear",
+              fallback_path = "standard_gam->linear",
+              basis_dimension = 2
             )
           }
-          if (is.null(fit))
-            lm(log_seg ~ seg_run)$fitted.values - mean(lm(log_seg ~ seg_run)$fitted.values)
-          else
-            (fit$fitted.values - mean(fit$fitted.values))
-        })
-        z <- log1p(data[correct_ids, idx, drop = FALSE]) - t(spline_vals)
-        detrended_data[correct_ids, idx] <- .inv_log1p(z, clamp_nonneg = TRUE)
+        } else {
+          standard_basis_dimension <- tryCatch(
+            standard_fit$smooth[[1]]$bs.dim,
+            error = function(e) NA_real_
+          )
+          standard_fit <- .tag_spline_fit(
+            standard_fit,
+            smoother_type = "standard_gam_cr",
+            fallback_path = "standard_gam",
+            basis_dimension = standard_basis_dimension
+          )
+        }
+        standard_fit
       }
-      non_correct_ids <- setdiff(seq_len(nrow(data)), correct_ids)
-      if (length(non_correct_ids) > 0) {
-        detrended_data[non_correct_ids, idx] <- data[non_correct_ids, idx]
+
+      if (is.null(fit) || is.null(fit$fitted.values) ||
+          any(!is.finite(fit$fitted.values))) {
+        decision_reason[feature_index] <- "smoother_failed"
+        next
       }
+      centered_fit <- fit$fitted.values - mean(fit$fitted.values)
+      corrected_log <- log_seg - centered_fit
+      corrected_values <- .inv_log1p(corrected_log, clamp_nonneg = TRUE)
+      detrended_data[feature_index, idx] <- corrected_values
+      actual_correction[feature_index] <- TRUE
+      fit_smoother_type <- attr(fit, "winn_smoother_type")
+      if (length(fit_smoother_type) == 1L) {
+        smoother_type[feature_index] <- fit_smoother_type
+      }
+      fit_basis_dimension <- attr(fit, "winn_basis_dimension")
+      if (length(fit_basis_dimension) == 1L) {
+        basis_dimension[feature_index] <- fit_basis_dimension
+      }
+      fit_fallback_path <- attr(fit, "winn_fallback_path")
+      if (length(fit_fallback_path) == 1L) {
+        fallback_path[feature_index] <- fit_fallback_path
+      }
+      fit_warnings <- attr(fit, "winn_warnings")
+      if (!is.null(fit_warnings) && length(fit_warnings)) {
+        warning_status[feature_index] <- TRUE
+        warning_message[feature_index] <- paste(fit_warnings, collapse = " | ")
+      }
+      if (inherits(fit, "gam") && !is.null(fit$edf)) {
+        effective_df[feature_index] <- sum(fit$edf)
+      } else if (!is.null(fit$rank)) {
+        effective_df[feature_index] <- fit$rank
+      }
+      correction_magnitude[feature_index] <- median(
+        abs(log1p(corrected_values) - log_seg),
+        na.rm = TRUE
+      )
     }
+
+    diagnostic_rows[[batch_index]] <- data.frame(
+      feature_id = feature_ids,
+      segment = as.character(b),
+      segment_size = segment_n,
+      testable = testable,
+      lag = if (identical(test, "Ljung-Box")) segment_lag else NA_integer_,
+      raw_p_value = as.numeric(p_values),
+      adjusted_p_value = as.numeric(adjusted_values),
+      selective_significance = selective_decision,
+      actual_correction = actual_correction,
+      decision_reason = decision_reason,
+      gate = gate,
+      smoother_type = smoother_type,
+      basis_dimension = basis_dimension,
+      effective_df = effective_df,
+      fallback_path = fallback_path,
+      warning_status = warning_status,
+      warning_message = warning_message,
+      correction_magnitude = correction_magnitude,
+      stringsAsFactors = FALSE
+    )
   }
-  return(detrended_data)
+  if (!isTRUE(return_diagnostics)) {
+    return(detrended_data)
+  }
+  list(data = detrended_data, diagnostics = do.call(rbind, diagnostic_rows))
 }
 
 #' Perform ANOVA-based Mean-Only Batch Correction
@@ -269,37 +410,98 @@ autocorrelation_correct <- function(data,
 #' @param data A numeric matrix (metabolites × samples).
 #' @param batch A factor or numeric vector indicating batch for each sample.
 #' @param fdr_threshold Significance threshold for FDR-adjusted p-values.
-#' @return A numeric matrix of corrected intensities.
+#' @param gate Batch gate mode: `"selective"` (default), `"all"`, or
+#' `"none"`.
+#' @param return_diagnostics Logical; if `TRUE`, return feature-level test and
+#' correction diagnostics together with the corrected matrix.
+#' @return A numeric matrix of corrected intensities, or a list containing the
+#' matrix and diagnostics when `return_diagnostics = TRUE`.
 #' @examples
 #' mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
 #' batch <- rep(1:4, length.out=ncol(mat))
 #' corrected <- anova_batch_correction(mat, batch, fdr_threshold=0.05)
 #' @export
-anova_batch_correction <- function(data, batch, fdr_threshold = 0.05) {
+anova_batch_correction <- function(data,
+                                   batch,
+                                   fdr_threshold = 0.05,
+                                   gate = c("selective", "all", "none"),
+                                   return_diagnostics = FALSE) {
   if (!is.matrix(data) || !is.numeric(data)) {
     stop("Data must be a numeric matrix.")
   }
   if (length(batch) != ncol(data)) {
     stop("Length of batch must match number of columns in data.")
   }
+  gate <- match.arg(gate)
   batch <- factor(batch)
+  feature_ids <- rownames(data)
+  if (is.null(feature_ids)) {
+    feature_ids <- paste0("feature_", seq_len(nrow(data)))
+  }
+  if (identical(gate, "none")) {
+    diagnostics <- data.frame(
+      feature_id = feature_ids,
+      raw_p_value = NA_real_,
+      adjusted_p_value = NA_real_,
+      selective_significance = FALSE,
+      eligible = apply(data, 1, function(v) all(is.finite(v))),
+      actual_correction = FALSE,
+      decision_reason = "not_selected",
+      n_batches = length(unique(batch)),
+      gate = gate,
+      correction_magnitude = 0,
+      stringsAsFactors = FALSE
+    )
+    if (!isTRUE(return_diagnostics)) {
+      return(data)
+    }
+    return(list(data = data, diagnostics = diagnostics))
+  }
   if (length(unique(batch)) < 2) {
     message("Only one batch detected. Skipping ANOVA-based correction.")
-    return(data)
+    if (!isTRUE(return_diagnostics)) {
+      return(data)
+    }
+    return(list(
+      data = data,
+      diagnostics = data.frame(
+        feature_id = feature_ids,
+        raw_p_value = NA_real_,
+        adjusted_p_value = NA_real_,
+        selective_significance = FALSE,
+        eligible = FALSE,
+        actual_correction = FALSE,
+        decision_reason = "not_testable",
+        n_batches = 1L,
+        gate = gate,
+        correction_magnitude = 0,
+        stringsAsFactors = FALSE
+      )
+    ))
   }
   z <- log1p(data)
   n_met <- nrow(z)
-  pvals <- numeric(n_met)
+  pvals <- rep(NA_real_, n_met)
   for (i in seq_len(n_met)) {
     df <- data.frame(value = z[i, ], batch = batch)
-    a <- aov(value ~ batch, data = df)
-    pvals[i] <- summary(a)[[1]]$`Pr(>F)`[1]
+    pvals[i] <- tryCatch({
+      a <- aov(value ~ batch, data = df)
+      summary(a)[[1]]$`Pr(>F)`[1]
+    }, error = function(e) NA_real_)
   }
   padj <- p.adjust(pvals, method = "fdr")
   
   corrected <- z
-  sig <- which(padj < fdr_threshold)
-  if (length(sig) > 0) {
+  eligible <- apply(z, 1, function(v) all(is.finite(v)))
+  selective_decision <- is.finite(padj) & padj < fdr_threshold
+  correct_mask <- switch(
+    gate,
+    selective = selective_decision,
+    all = eligible,
+    none = rep(FALSE, n_met)
+  )
+  sig <- which(correct_mask)
+  if (length(sig) > 0L) {
     overall_means <- rowMeans(z, na.rm = TRUE)
     for (i in sig) {
       # compute batch-specific and overall means
@@ -309,7 +511,36 @@ anova_batch_correction <- function(data, batch, fdr_threshold = 0.05) {
       corrected[i, ] <- z[i, ] - shift[as.character(batch)]
     }
   }
-  return(.inv_log1p(corrected, clamp_nonneg = TRUE))
+  corrected_intensity <- .inv_log1p(corrected, clamp_nonneg = TRUE)
+  if (!isTRUE(return_diagnostics)) {
+    return(corrected_intensity)
+  }
+  correction_magnitude <- apply(abs(corrected - z), 1, median, na.rm = TRUE)
+  decision_reason <- ifelse(
+    !eligible,
+    "not_testable",
+    ifelse(
+      correct_mask,
+      if (identical(gate, "all")) "forced_all" else "selected",
+      "not_selected"
+    )
+  )
+  list(
+    data = corrected_intensity,
+    diagnostics = data.frame(
+      feature_id = feature_ids,
+      raw_p_value = as.numeric(pvals),
+      adjusted_p_value = as.numeric(padj),
+      selective_significance = selective_decision,
+      eligible = eligible,
+      actual_correction = correct_mask,
+      decision_reason = decision_reason,
+      n_batches = nlevels(batch),
+      gate = gate,
+      correction_magnitude = as.numeric(correction_magnitude),
+      stringsAsFactors = FALSE
+    )
+  )
 }
 
 #' Perform ComBat Batch Correction by batch
@@ -944,6 +1175,17 @@ winn <- function(data,
   })
 }
 
+.tag_spline_fit <- function(fit, smoother_type, fallback_path, basis_dimension = NA_real_, warnings = character()) {
+  if (is.null(fit)) {
+    return(NULL)
+  }
+  attr(fit, "winn_smoother_type") <- smoother_type
+  attr(fit, "winn_fallback_path") <- fallback_path
+  attr(fit, "winn_basis_dimension") <- as.numeric(basis_dimension)
+  attr(fit, "winn_warnings") <- as.character(warnings)
+  fit
+}
+
 .fit_conservative_spline <- function(y, x) {
   # Conservative spline fitting with optimal parameters for drift removal
   if (!requireNamespace("mgcv", quietly = TRUE)) {
@@ -958,7 +1200,12 @@ winn <- function(data,
       error = function(e)
         NULL
     )
-    return(fit)
+    return(.tag_spline_fit(
+      fit,
+      smoother_type = "linear",
+      fallback_path = "short_segment_linear",
+      basis_dimension = 2
+    ))
   }
   
   # For longer segments, use conservative GAM parameters
@@ -975,7 +1222,12 @@ winn <- function(data,
     NULL)
   
   if (!is.null(fit))
-    return(fit)
+    return(.tag_spline_fit(
+      fit,
+      smoother_type = "conservative_ps_reml",
+      fallback_path = "ps_reml_gamma_1.4",
+      basis_dimension = k_max
+    ))
   
   # 2. Thin plate splines with conservative settings
   fit <- tryCatch({
@@ -986,7 +1238,12 @@ winn <- function(data,
     NULL)
   
   if (!is.null(fit))
-    return(fit)
+    return(.tag_spline_fit(
+      fit,
+      smoother_type = "conservative_tp_reml",
+      fallback_path = "ps_failed->tp_reml_gamma_1.2",
+      basis_dimension = k_max
+    ))
   
   # 3. Cubic regression splines with fixed df (very conservative)
   fit <- tryCatch({
@@ -1000,7 +1257,12 @@ winn <- function(data,
     NULL)
   
   if (!is.null(fit))
-    return(fit)
+    return(.tag_spline_fit(
+      fit,
+      smoother_type = "conservative_cr_fixed",
+      fallback_path = "ps_failed->tp_failed->cr_fixed",
+      basis_dimension = min(6, k_max)
+    ))
   
   # 4. Fallback to LOESS
   fit <- tryCatch({
@@ -1010,14 +1272,25 @@ winn <- function(data,
     NULL)
   
   if (!is.null(fit))
-    return(fit)
+    return(.tag_spline_fit(
+      fit,
+      smoother_type = "loess",
+      fallback_path = "ps_failed->tp_failed->cr_failed->loess",
+      basis_dimension = NA_real_
+    ))
   
   # 5. Final fallback to linear regression
-  return(tryCatch(
+  fit <- tryCatch(
     lm(y ~ x),
     error = function(e)
       NULL
-  ))
+  )
+  .tag_spline_fit(
+    fit,
+    smoother_type = "linear",
+    fallback_path = "ps_failed->tp_failed->cr_failed->loess_failed->linear",
+    basis_dimension = 2
+  )
 }
 
 .fkPELT <- function(data, knots, penalty = NULL) {

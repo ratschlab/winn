@@ -1,18 +1,18 @@
 test_that("adaptive lag enforces the heuristic and minimum degrees of freedom", {
   expect_equal(
-    winn:::.resolve_autocorrelation_lag(lag = NULL, n_obs = 50, model_df = 1L),
+    winn:::.resolve_autocorrelation_lag(lag = NULL, n_obs = 50, model_df = 0L),
     10L
   )
   expect_equal(
-    winn:::.resolve_autocorrelation_lag(lag = NULL, n_obs = 15, model_df = 1L),
-    4L
+    winn:::.resolve_autocorrelation_lag(lag = NULL, n_obs = 15, model_df = 0L),
+    3L
   )
   expect_equal(
-    winn:::.resolve_autocorrelation_lag(lag = 2, n_obs = 20, model_df = 1L),
-    4L
+    winn:::.resolve_autocorrelation_lag(lag = 2, n_obs = 20, model_df = 0L),
+    3L
   )
   expect_true(is.na(
-    winn:::.resolve_autocorrelation_lag(lag = NULL, n_obs = 4, model_df = 1L)
+    winn:::.resolve_autocorrelation_lag(lag = NULL, n_obs = 3, model_df = 0L)
   ))
 })
 
@@ -35,23 +35,30 @@ test_that("fkPELT penalties resolve for named strategies", {
   expect_equal(winn:::.resolve_pelt_penalty(agg_signal = agg, pelt_penalty = NULL), mbic)
 })
 
-test_that("vectorized Ljung-Box p-values match Box.test", {
+test_that("vectorized Ljung-Box p-values match Box.test for fitdf 0 and 1", {
   set.seed(11)
   seg <- matrix(abs(rnorm(60, mean = 20, sd = 3)), nrow = 6)
   lag <- 4L
-  fitdf <- 1L
-
-  expected <- apply(seg, 1, function(x) {
-    Box.test(log1p(x), lag = lag, type = "Ljung-Box", fitdf = fitdf)$p.value
+  observed <- lapply(0:1, function(fitdf) {
+    expected <- apply(seg, 1, function(x) {
+      Box.test(log1p(x), lag = lag, type = "Ljung-Box", fitdf = fitdf)$p.value
+    })
+    actual <- winn:::.compute_ljung_box_pvalues(
+      segment = seg,
+      segment_lag = lag,
+      model_df = fitdf
+    )
+    expect_equal(actual, expected, tolerance = 1e-10)
+    actual
   })
 
-  observed <- winn:::.compute_ljung_box_pvalues(
-    segment = seg,
-    segment_lag = lag,
-    model_df = fitdf
+  expect_false(isTRUE(all.equal(observed[[1]], observed[[2]])))
+  expect_true(all(observed[[2]] <= observed[[1]]))
+  expect_equal(winn:::.autocorrelation_model_df("Ljung-Box"), 0L)
+  expect_equal(
+    winn:::.autocorrelation_model_df("Ljung-Box", ljung_box_fitdf = 1L),
+    1L
   )
-
-  expect_equal(observed, expected, tolerance = 1e-10)
 })
 
 test_that("threshold candidate materializers collapse duplicate states", {

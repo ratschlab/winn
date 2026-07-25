@@ -19,6 +19,10 @@ MAD, thresholds, and upper/lower outlier masks are computed once from the
 original finite values. Upper- and lower-tail values are then shrunk
 independently in one non-iterative pass; adjusting one tail cannot change
 the threshold or membership of the other tail.
+Non-finite values are not eligible for threshold estimation and are returned
+unchanged by this standalone helper. The full \code{\link[=winn]{winn()}} pipeline instead
+requires finite, non-negative input. Numeric zeros are treated as observed
+values and are never automatically converted to missing values.
 }
 \examples{
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)

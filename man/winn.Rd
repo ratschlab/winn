@@ -17,8 +17,10 @@ winn(
   remove_batch_effects = "anova",
   test = "Ljung-Box",
   lag = NULL,
+  ljung_box_fitdf = 0L,
   scale_by_batch = FALSE,
-  pelt_penalty = NULL
+  pelt_penalty = NULL,
+  return_details = FALSE
 )
 }
 \arguments{
@@ -31,17 +33,24 @@ winn(
 \item{control_samples}{An optional numeric vector representing the columns corresponding to control samples. If provided,
 these will be used for normalization and parameter tuning.}
 
-\item{parameters}{An optional character string specifying whether to use fixed ("fixed") or auto-detected ("auto") parameters in presence of control samples (default: "auto").}
+\item{parameters}{A character string specifying fixed (\code{"fixed"}, the
+default) or QC-tuned (\code{"auto"}) parameters. Auto mode requires controls.}
 
-\item{fdr_threshold}{A numeric value specifying the FDR threshold for drift and batch corrections (default: 0.05).}
+\item{fdr_threshold}{Fixed-mode FDR threshold for drift and selective ANOVA
+batch correction. Auto mode searches 0.10, 0.05, and 0.01.}
 
-\item{median_adjustment}{A character string specifying the method for median adjustment ("shrink", "normalize", or "none").}
+\item{median_adjustment}{Fixed-mode median adjustment (\code{"shrink"},
+\code{"normalize"}, or \code{"none"}). Auto mode searches \code{"shrink"} and
+\code{"normalize"}.}
 
 \item{detrend_non_autocorrelated}{A character string specifying the method for detrending non-autocorrelated metabolites ("mean" or "spline").}
 
-\item{spline_method}{A character string specifying the spline method when detrend="spline" ("conservative" for robust drift removal or "standard" for traditional approach).}
+\item{spline_method}{Fixed-mode spline method (\code{"conservative"} or
+\code{"standard"}). Auto mode searches both.}
 
-\item{remove_batch_effects}{A character string specifying the method for removing batch effects ("anova" or "combat").}
+\item{remove_batch_effects}{Batch method. \code{"anova"} selectively corrects
+features that pass its FDR gate; \code{"combat"} applies global empirical Bayes
+location/scale correction to all features.}
 
 \item{test}{A character vector specifying the autocorrelation test(s)
 to use. Fixed mode requires a single value. Auto mode evaluates only the
@@ -51,14 +60,23 @@ supplied tests, so \code{DW} is included only when explicitly requested.}
 If \code{NULL}, \code{autocorrelation_correct()} selects the lag adaptively for each
 batch segment.}
 
+\item{ljung_box_fitdf}{Non-negative integer passed to \code{\link[stats:Box.test]{stats::Box.test()}}.
+The default is \code{0} because no ARMA model is fitted. Use \code{1} only for legacy
+reproduction or a documented sensitivity analysis.}
+
 \item{scale_by_batch}{Logical indicating whether to scale data by batch after corrections.}
 
 \item{pelt_penalty}{Optional fkPELT penalty specification. Use a positive
 numeric value, \code{"bic"}, \code{"mbic"}, or \code{NULL}. When \code{NULL}, fkPELT uses
 the conservative MBIC default.}
+
+\item{return_details}{Logical. The default \code{FALSE} returns the corrected
+matrix for backward compatibility. \code{TRUE} returns a \code{winn_result} list with
+the matrix, selected parameters, batch assignments, and stage decisions.}
 }
 \value{
-A numeric matrix of corrected intensities.
+A numeric matrix of corrected intensities, or a structured
+\code{winn_result} when \code{return_details = TRUE}.
 }
 \description{
 This function performs a series of corrections on metabolomics data to adjust for dilution effects, outliers, drift, and batch effects.
@@ -76,8 +94,19 @@ The correction pipeline is as follows:
 
 When control samples are provided and parameters="auto", the function performs comprehensive parameter
 optimization by testing multiple combinations of settings and selecting those that maximize control sample
-correlation while minimizing coefficient of variation. This includes optimization of spline methods,
-FDR thresholds, normalization approaches, and scaling options.
+correlation while minimizing coefficient of variation. This searches spline
+methods, FDR thresholds, and normalization approaches while respecting the
+supplied autocorrelation-test family and \code{scale_by_batch} setting.
+Auto mode requires at least two controls. In auto mode, \code{fdr_threshold},
+\code{spline_method}, and \code{median_adjustment} are fixed-mode settings and are
+replaced by the documented internal candidate grids. Other arguments still
+constrain the candidate family. Set \code{return_details = TRUE} to retain the
+selected settings and stage decisions in machine-readable form.
+
+The full pipeline expects finite, non-negative quantitative intensities.
+Zeros are treated as observed values and are not converted to missingness.
+Users should recode declared non-detection sentinels and impute missing
+values using a documented preprocessing policy before calling \code{winn()}.
 }
 \examples{
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)

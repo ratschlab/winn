@@ -32,7 +32,10 @@ matrix and diagnostics when \code{return_diagnostics = TRUE}.
 \description{
 This function runs an ANOVA test on each metabolite to detect batch effects,
 and then corrects significant batch effects by subtracting the estimated
-batch-specific shifts (while preserving the overall mean).
+batch-specific shifts (while preserving the overall mean). With the default
+selective gate, features that do not pass the FDR threshold are unchanged;
+this differs from \code{\link[=combat_batch_correction]{combat_batch_correction()}}, which applies an empirical
+Bayes location/scale model to every feature.
 }
 \examples{
 mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)

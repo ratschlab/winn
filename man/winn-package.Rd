@@ -29,7 +29,9 @@ parameters to maximize QC consistency.
 \section{Data format}{
 
 WINN expects a metabolites-by-samples matrix. Run order, batch annotations,
-and QC index vectors should all align with \code{ncol(data)}.
+and QC index vectors should all align with \code{ncol(data)}. The full pipeline
+requires finite, non-negative quantitative intensities. Numeric zeros are
+treated as observed and are never silently converted to missing values.
 }
 
 \section{Dependencies}{
@@ -60,6 +62,11 @@ Useful links:
 }
 \author{
 \strong{Maintainer}: Tanmay Tanna \email{ttanna@ethz.ch}
+
+Authors:
+\itemize{
+  \item Tanmay Tanna \email{ttanna@ethz.ch}
+}
 
 }
 \keyword{internal}

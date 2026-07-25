@@ -21,7 +21,9 @@
 #'
 #' @section Data format:
 #' WINN expects a metabolites-by-samples matrix. Run order, batch annotations,
-#' and QC index vectors should all align with `ncol(data)`.
+#' and QC index vectors should all align with `ncol(data)`. The full pipeline
+#' requires finite, non-negative quantitative intensities. Numeric zeros are
+#' treated as observed and are never silently converted to missing values.
 #'
 #' @section Dependencies:
 #' - `mgcv` for spline-based drift detrending

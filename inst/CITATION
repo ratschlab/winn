@@ -1,0 +1,20 @@
+citHeader("To cite the WiNN method, use:")
+
+bibentry(
+  bibtype = "Unpublished",
+  title = "WiNNbeta: Batch and drift correction method by white noise normalization for metabolomic studies",
+  author = c(
+    person("Olga", "Demler"),
+    person("Franco", "Giulianini"),
+    person("Yanyan", "Liu"),
+    person("Malte", "Londschien"),
+    person("Anja", "Sjöström"),
+    person("Tanmay", "Tanna"),
+    person("Heike", "Luttmann-Gibson"),
+    person("Antoine", "Jeanrenaud")
+  ),
+  year = "2024",
+  note = "arXiv:2404.07906",
+  doi = "10.48550/arXiv.2404.07906",
+  url = "https://arxiv.org/abs/2404.07906"
+)

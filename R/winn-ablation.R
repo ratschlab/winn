@@ -19,6 +19,8 @@
 #' @param fdr_threshold Fixed FDR threshold for drift and batch gates.
 #' @param test Autocorrelation test, normally `"Ljung-Box"`.
 #' @param lag Optional fixed lag; `NULL` uses the package's adaptive lag.
+#' @param ljung_box_fitdf Non-negative Ljung-Box fitted-model degrees of
+#' freedom. The default is `0`; use `1` only for legacy reproduction.
 #' @param spline_method Drift smoother, normally `"conservative"`.
 #' @param return_intermediates Whether to return all stage matrices.
 #' @param return_diagnostics Whether to return gate and magnitude diagnostics.
@@ -38,6 +40,7 @@ winn_ablation <- function(data,
                           fdr_threshold = 0.05,
                           test = "Ljung-Box",
                           lag = NULL,
+                          ljung_box_fitdf = 0L,
                           spline_method = "conservative",
                           return_intermediates = TRUE,
                           return_diagnostics = TRUE) {
@@ -45,25 +48,21 @@ winn_ablation <- function(data,
     stop("Data must be a matrix or data frame.")
   }
   data <- as.matrix(data)
-  if (!is.numeric(data)) {
-    stop("Data must be numeric.")
-  }
+  .validate_intensity_matrix(data, require_nonnegative = TRUE)
   if (!identical(parameters, "fixed")) {
     stop("winn_ablation() supports fixed parameters only.")
   }
-  if (missing(batch) || is.null(batch) || length(batch) != ncol(data)) {
+  if (missing(batch)) {
     stop("A supplied batch vector matching the sample count is required.")
   }
-  if (!is.null(run_order) && length(run_order) != ncol(data)) {
-    stop("Length of run_order must match number of columns in data.")
-  }
-  if (!is.null(control_samples) &&
-      any(is.na(match(control_samples, seq_len(ncol(data)))))) {
-    stop("control_samples must contain valid column indices.")
-  }
-  if (any(is.na(data) | is.infinite(data))) {
-    warning("Data contains NA or infinite values. Results may be unreliable.")
-  }
+  .validate_batch(batch, ncol(data))
+  .validate_run_order(run_order, batch, ncol(data))
+  .validate_control_samples(control_samples, ncol(data))
+  .validate_probability(fdr_threshold, "fdr_threshold")
+  ljung_box_fitdf <- .validate_ljung_box_fitdf(ljung_box_fitdf)
+  .validate_flag(use_outlier_shrinkage, "use_outlier_shrinkage")
+  .validate_flag(return_intermediates, "return_intermediates")
+  .validate_flag(return_diagnostics, "return_diagnostics")
   drift_gate <- match.arg(drift_gate)
   batch_gate <- match.arg(batch_gate)
   pqn_mode <- match.arg(pqn_mode)
@@ -102,6 +101,7 @@ winn_ablation <- function(data,
     batch = batch,
     lag = lag,
     test = test,
+    ljung_box_fitdf = ljung_box_fitdf,
     detrend = "mean",
     fdr_threshold = fdr_threshold,
     spline_method = spline_method,
@@ -197,6 +197,7 @@ winn_ablation <- function(data,
       pqn_mode = pqn_mode,
       fdr_threshold = fdr_threshold,
       test = test,
+      ljung_box_fitdf = if (identical(test, "Ljung-Box")) ljung_box_fitdf else "not used",
       lag = if (is.null(lag)) "adaptive" else as.integer(lag),
       spline_method = spline_method,
       remove_batch_effects = "anova",

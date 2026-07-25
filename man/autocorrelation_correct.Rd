@@ -10,6 +10,7 @@ autocorrelation_correct(
   batch,
   lag = NULL,
   test = "Ljung-Box",
+  ljung_box_fitdf = 0L,
   detrend = "mean",
   fdr_threshold = 0.05,
   spline_method = "conservative",
@@ -20,15 +21,21 @@ autocorrelation_correct(
 \arguments{
 \item{data}{A numeric matrix with rows representing metabolites and columns representing samples.}
 
-\item{run_order}{An optional numeric vector representing the run order of the samples.}
+\item{run_order}{An optional numeric vector representing the run order of the samples.
+If \code{NULL}, the current matrix-column order is treated as acquisition order.}
 
-\item{batch}{A numeric vector indicating the batch (or segment) assignment for each sample.}
+\item{batch}{A vector indicating the batch (or segment) assignment for each sample.}
 
 \item{lag}{An optional integer specifying the lag to be used in the autocorrelation test.
 If \code{NULL}, the lag is selected adaptively for each batch segment using
 \code{max(min(10, floor(n / 5)), df + 3)} and then capped at \code{n - 1}.}
 
 \item{test}{A character string specifying the autocorrelation test to use ("Ljung-Box" or "DW").}
+
+\item{ljung_box_fitdf}{Non-negative integer passed to \code{\link[stats:Box.test]{stats::Box.test()}} as
+\code{fitdf}. The default is \code{0} because WiNN does not fit an ARMA model before
+testing. Set this to \code{1} only to reproduce the legacy WiNN gate or for a
+documented sensitivity analysis.}
 
 \item{detrend}{A character string indicating the method for detrending ("mean" or "spline").}
 
@@ -48,7 +55,10 @@ A numeric matrix with drift corrected, or a list containing the
 matrix and diagnostics when \code{return_diagnostics = TRUE}.
 }
 \description{
-This function corrects for drift effects in metabolomics data by detrending based on run order within each batch segment.
+This function corrects for drift effects in metabolomics data by detrending
+based on run order within each batch segment. When \code{run_order} is supplied,
+every segment is sorted by that vector for both testing and smoothing, and
+the corrected values are then restored to the original matrix-column order.
 }
 \examples{
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)

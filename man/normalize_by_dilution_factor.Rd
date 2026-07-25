@@ -14,7 +14,8 @@ normalize_by_dilution_factor(
 \arguments{
 \item{data}{A numeric matrix or data frame where rows represent metabolites and columns represent samples.}
 
-\item{processing}{A character string specifying the processing method to use. Options are "shrink" (default) or "normalize".}
+\item{processing}{A character string specifying the processing method to use.
+Options are \code{"shrink"} (default) or \code{"normalize"}.}
 
 \item{control_samples}{An optional numeric vector specifying which columns correspond to control samples.
 If provided, the reference spectrum is calculated using only these samples.}
@@ -29,6 +30,9 @@ matrix and diagnostics when \code{return_diagnostics = TRUE}.
 \description{
 This function normalizes a data matrix by dilution factors or alternatively shrinks sample measurements
 if any samples have dilution factors that are more than one standard deviation away from the mean dilution factor.
+Numeric zeros remain observed values. Features whose reference median is zero
+are omitted from quotient fitting, but retained when the estimated sample
+factors are applied. A sample with a non-positive dilution factor is rejected.
 }
 \examples{
 # Example usage:

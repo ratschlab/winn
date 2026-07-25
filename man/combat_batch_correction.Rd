@@ -28,7 +28,9 @@ A numeric matrix of corrected intensities.
 }
 \description{
 This function applies the empirical Bayes ComBat method to correct batch effects
-by batch, adjusting both location and scale parameters across batch.
+by batch, adjusting both location and scale parameters across batch. Unlike
+the default selective ANOVA gate in \code{\link[=anova_batch_correction]{anova_batch_correction()}}, ComBat is a
+global correction: every feature is passed to the empirical Bayes model.
 }
 \examples{
 mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)

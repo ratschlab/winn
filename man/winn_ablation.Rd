@@ -17,6 +17,7 @@ winn_ablation(
   fdr_threshold = 0.05,
   test = "Ljung-Box",
   lag = NULL,
+  ljung_box_fitdf = 0L,
   spline_method = "conservative",
   return_intermediates = TRUE,
   return_diagnostics = TRUE
@@ -48,6 +49,9 @@ available through this interface.}
 \item{test}{Autocorrelation test, normally \code{"Ljung-Box"}.}
 
 \item{lag}{Optional fixed lag; \code{NULL} uses the package's adaptive lag.}
+
+\item{ljung_box_fitdf}{Non-negative Ljung-Box fitted-model degrees of
+freedom. The default is \code{0}; use \code{1} only for legacy reproduction.}
 
 \item{spline_method}{Drift smoother, normally \code{"conservative"}.}
 

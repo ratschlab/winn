@@ -2,13 +2,148 @@
 # Exported Functions
 ###############################################################################
 
+.validate_intensity_matrix <- function(data,
+                                       context = "data",
+                                       require_nonnegative = FALSE,
+                                       allow_nonfinite = FALSE) {
+  if (!is.matrix(data) || !is.numeric(data)) {
+    stop(context, " must be a numeric matrix.", call. = FALSE)
+  }
+  if (nrow(data) < 1L || ncol(data) < 1L) {
+    stop(context, " must contain at least one row and one column.", call. = FALSE)
+  }
+  if (!allow_nonfinite && any(!is.finite(data))) {
+    stop(
+      context,
+      " must contain only finite values. Convert declared non-detections to ",
+      "missing values and impute them before running WiNN.",
+      call. = FALSE
+    )
+  }
+  if (require_nonnegative && any(data < 0, na.rm = TRUE)) {
+    stop(
+      context,
+      " must contain non-negative intensities because WiNN uses log1p. ",
+      "Values at or below -1 are undefined and other negative values are not ",
+      "valid abundance inputs.",
+      call. = FALSE
+    )
+  }
+  invisible(data)
+}
+
+.validate_batch <- function(batch, n_samples, required = TRUE) {
+  if (is.null(batch)) {
+    if (isTRUE(required)) {
+      stop("batch must be supplied.", call. = FALSE)
+    }
+    return(invisible(NULL))
+  }
+  if (is.matrix(batch) || is.data.frame(batch) || length(batch) != n_samples) {
+    stop("batch must be a vector with one value per data column.", call. = FALSE)
+  }
+  if (anyNA(batch)) {
+    stop("batch must not contain missing values.", call. = FALSE)
+  }
+  if (is.numeric(batch) && any(!is.finite(batch))) {
+    stop("Numeric batch labels must be finite.", call. = FALSE)
+  }
+  batch_text <- trimws(as.character(batch))
+  if (any(!nzchar(batch_text))) {
+    stop("batch labels must not be empty.", call. = FALSE)
+  }
+  invisible(batch)
+}
+
+.validate_run_order <- function(run_order, batch, n_samples) {
+  if (is.null(run_order)) {
+    return(invisible(NULL))
+  }
+  if (!is.numeric(run_order) || is.matrix(run_order) ||
+      length(run_order) != n_samples || any(!is.finite(run_order))) {
+    stop(
+      "run_order must be a finite numeric vector with one value per data column.",
+      call. = FALSE
+    )
+  }
+  groups <- if (is.null(batch)) {
+    list(all_samples = seq_len(n_samples))
+  } else {
+    split(seq_len(n_samples), as.character(batch), drop = TRUE)
+  }
+  duplicate_groups <- names(groups)[vapply(groups, function(idx) {
+    anyDuplicated(run_order[idx]) > 0L
+  }, logical(1))]
+  if (length(duplicate_groups)) {
+    stop(
+      "run_order must be unique within each batch; duplicates found in: ",
+      paste(duplicate_groups, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+  invisible(run_order)
+}
+
+.validate_control_samples <- function(control_samples, n_samples) {
+  if (is.null(control_samples)) {
+    return(invisible(NULL))
+  }
+  if (!is.numeric(control_samples) || any(!is.finite(control_samples)) ||
+      any(control_samples != round(control_samples)) ||
+      any(control_samples < 1L | control_samples > n_samples) ||
+      anyDuplicated(control_samples)) {
+    stop(
+      "control_samples must contain unique, finite column indices in data.",
+      call. = FALSE
+    )
+  }
+  invisible(as.integer(control_samples))
+}
+
+.validate_probability <- function(value, name) {
+  if (!is.numeric(value) || length(value) != 1L || !is.finite(value) ||
+      value <= 0 || value >= 1) {
+    stop(name, " must be one finite number strictly between 0 and 1.", call. = FALSE)
+  }
+  invisible(value)
+}
+
+.validate_flag <- function(value, name) {
+  if (!is.logical(value) || length(value) != 1L || is.na(value)) {
+    stop(name, " must be TRUE or FALSE.", call. = FALSE)
+  }
+  invisible(value)
+}
+
+.validate_ljung_box_fitdf <- function(ljung_box_fitdf) {
+  if (!is.numeric(ljung_box_fitdf) || length(ljung_box_fitdf) != 1L ||
+      !is.finite(ljung_box_fitdf) || ljung_box_fitdf < 0 ||
+      ljung_box_fitdf != round(ljung_box_fitdf)) {
+    stop("ljung_box_fitdf must be a single non-negative integer.", call. = FALSE)
+  }
+  as.integer(ljung_box_fitdf)
+}
+
+.ordered_batch_indices <- function(batch, batch_value, run_order = NULL) {
+  idx <- which(batch == batch_value)
+  if (!is.null(run_order)) {
+    idx <- idx[order(run_order[idx])]
+  }
+  idx
+}
+
 #' Normalize Data Matrix by Dilution Factor
 #'
 #' This function normalizes a data matrix by dilution factors or alternatively shrinks sample measurements
 #' if any samples have dilution factors that are more than one standard deviation away from the mean dilution factor.
+#' Numeric zeros remain observed values. Features whose reference median is zero
+#' are omitted from quotient fitting, but retained when the estimated sample
+#' factors are applied. A sample with a non-positive dilution factor is rejected.
 #'
 #' @param data A numeric matrix or data frame where rows represent metabolites and columns represent samples.
-#' @param processing A character string specifying the processing method to use. Options are "shrink" (default) or "normalize".
+#' @param processing A character string specifying the processing method to use.
+#' Options are `"shrink"` (default) or `"normalize"`.
 #' @param control_samples An optional numeric vector specifying which columns correspond to control samples.
 #' If provided, the reference spectrum is calculated using only these samples.
 #' @param return_diagnostics Logical; if `TRUE`, return the corrected matrix and
@@ -29,19 +164,47 @@ normalize_by_dilution_factor <- function(data,
   }
   if (is.data.frame(data))
     data <- as.matrix(data)
-  
+  .validate_intensity_matrix(data, require_nonnegative = TRUE)
+  processing <- match.arg(processing, c("shrink", "normalize"))
+  .validate_control_samples(control_samples, ncol(data))
+  .validate_flag(return_diagnostics, "return_diagnostics")
+
   if (!is.null(control_samples)) {
     # Calculate reference spectrum using control samples only
-    reference_spectrum <- apply(data[, control_samples, drop = FALSE], 1, median, na.rm = TRUE)
+    reference_spectrum <- apply(data[, control_samples, drop = FALSE], 1, median)
   } else {
-    reference_spectrum <- apply(data, 1, median, na.rm = TRUE)
+    reference_spectrum <- apply(data, 1, median)
   }
-  
-  quotients <- data / reference_spectrum
-  dilution_factors <- apply(quotients, 2, median, na.rm = TRUE)
-  
-  mean_dilution <- mean(dilution_factors, na.rm = TRUE)
-  stdev_dilution <- sd(dilution_factors, na.rm = TRUE)
+
+  # Features with a zero reference cannot define a quotient. Zeros remain valid
+  # measurements; only zero-reference features are omitted from factor fitting.
+  reference_eligible <- is.finite(reference_spectrum) & reference_spectrum > 0
+  if (!any(reference_eligible)) {
+    stop(
+      "No feature has a positive reference median; dilution factors cannot be estimated.",
+      call. = FALSE
+    )
+  }
+  quotients <- data[reference_eligible, , drop = FALSE] /
+    reference_spectrum[reference_eligible]
+  dilution_factors <- apply(quotients, 2, median)
+  if (any(!is.finite(dilution_factors) | dilution_factors <= 0)) {
+    stop(
+      "Dilution factors must be finite and positive. Check zero-heavy samples ",
+      "and declared non-detection values before normalization.",
+      call. = FALSE
+    )
+  }
+
+  mean_dilution <- mean(dilution_factors)
+  stdev_dilution <- sd(dilution_factors)
+  if (!is.finite(stdev_dilution)) {
+    if (length(dilution_factors) == 1L) {
+      stdev_dilution <- 0
+    } else {
+      stop("Dilution-factor standard deviation is not finite.", call. = FALSE)
+    }
+  }
   lower_threshold <- mean_dilution - stdev_dilution
   upper_threshold <- mean_dilution + stdev_dilution
   
@@ -60,7 +223,7 @@ normalize_by_dilution_factor <- function(data,
           upper_threshold
       }
     }
-  } else if (processing == "normalize") {
+  } else {
     for (i in seq_along(dilution_factors)) {
       scaling_factors[i] <- 1 / dilution_factors[i]
       normalized_data[, i] <- normalized_data[, i] / dilution_factors[i]
@@ -85,6 +248,8 @@ normalize_by_dilution_factor <- function(data,
     altered = changed,
     scaling_factor = as.numeric(scaling_factors),
     reference_spectrum_type = if (is.null(control_samples)) "all_samples_median" else "control_samples_median",
+    reference_features_used = sum(reference_eligible),
+    zero_reference_features_omitted = sum(!reference_eligible),
     processing = processing,
     stringsAsFactors = FALSE
   )
@@ -99,6 +264,10 @@ normalize_by_dilution_factor <- function(data,
 #' original finite values. Upper- and lower-tail values are then shrunk
 #' independently in one non-iterative pass; adjusting one tail cannot change
 #' the threshold or membership of the other tail.
+#' Non-finite values are not eligible for threshold estimation and are returned
+#' unchanged by this standalone helper. The full [winn()] pipeline instead
+#' requires finite, non-negative input. Numeric zeros are treated as observed
+#' values and are never automatically converted to missing values.
 #'
 #' @param data A numeric matrix or data frame where rows represent metabolites and columns represent samples.
 #' @return A numeric matrix with adjusted outliers.
@@ -112,7 +281,8 @@ adjust_outliers_mad <- function(data) {
   }
   if (is.data.frame(data))
     data <- as.matrix(data)
-  
+  .validate_intensity_matrix(data, allow_nonfinite = TRUE)
+
   adjusted_data <- data
   for (i in seq_len(nrow(data))) {
     original <- data[i, ]
@@ -133,7 +303,7 @@ adjust_outliers_mad <- function(data) {
     lower_outlier <- eligible & original <= lower_threshold
     central <- eligible & !upper_outlier & !lower_outlier
 
-    if (any(upper_outlier)) {
+    if (any(upper_outlier) && any(central)) {
       upper_reference <- max(original[central])
       upper_extreme <- max(original[upper_outlier])
       adjusted_data[i, upper_outlier] <- approx(
@@ -144,7 +314,7 @@ adjust_outliers_mad <- function(data) {
       )$y
     }
 
-    if (any(lower_outlier)) {
+    if (any(lower_outlier) && any(central)) {
       lower_extreme <- min(original[lower_outlier])
       lower_reference <- min(original[central])
       adjusted_data[i, lower_outlier] <- approx(
@@ -284,6 +454,7 @@ adjust_outliers_mad <- function(data) {
                                                 batch,
                                                 lag,
                                                 test,
+                                                ljung_box_fitdf,
                                                 detrend,
                                                 spline_method,
                                                 max_fdr_threshold) {
@@ -296,7 +467,7 @@ adjust_outliers_mad <- function(data) {
   )
   for (i in seq_along(unique_batch)) {
     b <- unique_batch[i]
-    idx <- which(batch_vec == b)
+    idx <- .ordered_batch_indices(batch_vec, b, run_order)
     segment <- data[, idx, drop = FALSE]
     seg_run <- if (!is.null(run_order)) run_order[idx] else seq_along(idx)
     batch_info <- list(idx = idx)
@@ -304,7 +475,10 @@ adjust_outliers_mad <- function(data) {
       batch_info$detrended <- .detrend_segment_rows(segment, seg_run, spline_method)
     } else if (detrend == "mean") {
       segment_n <- length(idx)
-      model_df <- .autocorrelation_model_df(test = test)
+      model_df <- .autocorrelation_model_df(
+        test = test,
+        ljung_box_fitdf = ljung_box_fitdf
+      )
       segment_lag <- .resolve_autocorrelation_lag(
         lag = lag,
         n_obs = segment_n,
@@ -423,15 +597,23 @@ adjust_outliers_mad <- function(data) {
 
 #' Correct for Drift in Data Using Autocorrelation Correction
 #'
-#' This function corrects for drift effects in metabolomics data by detrending based on run order within each batch segment.
+#' This function corrects for drift effects in metabolomics data by detrending
+#' based on run order within each batch segment. When `run_order` is supplied,
+#' every segment is sorted by that vector for both testing and smoothing, and
+#' the corrected values are then restored to the original matrix-column order.
 #'
 #' @param data A numeric matrix with rows representing metabolites and columns representing samples.
 #' @param run_order An optional numeric vector representing the run order of the samples.
-#' @param batch A numeric vector indicating the batch (or segment) assignment for each sample.
+#' If `NULL`, the current matrix-column order is treated as acquisition order.
+#' @param batch A vector indicating the batch (or segment) assignment for each sample.
 #' @param lag An optional integer specifying the lag to be used in the autocorrelation test.
 #' If `NULL`, the lag is selected adaptively for each batch segment using
 #' `max(min(10, floor(n / 5)), df + 3)` and then capped at `n - 1`.
 #' @param test A character string specifying the autocorrelation test to use ("Ljung-Box" or "DW").
+#' @param ljung_box_fitdf Non-negative integer passed to [stats::Box.test()] as
+#' `fitdf`. The default is `0` because WiNN does not fit an ARMA model before
+#' testing. Set this to `1` only to reproduce the legacy WiNN gate or for a
+#' documented sensitivity analysis.
 #' @param detrend A character string indicating the method for detrending ("mean" or "spline").
 #' @param fdr_threshold A numeric value specifying the FDR threshold for significance.
 #' @param spline_method A character string specifying the spline method when detrend="spline" ("conservative" or "standard").
@@ -453,19 +635,18 @@ autocorrelation_correct <- function(data,
                                     batch,
                                     lag = NULL,
                                     test = "Ljung-Box",
+                                    ljung_box_fitdf = 0L,
                                     detrend = "mean",
                                     fdr_threshold = 0.05,
                                     spline_method = "conservative",
                                     gate = NULL,
                                     return_diagnostics = FALSE) {
-  if (!is.matrix(data))
-    stop("Data must be a numeric matrix.")
-  if (!is.null(run_order) && length(run_order) != ncol(data)) {
-    stop("Length of run_order must match number of columns in data.")
-  }
-  if (is.null(batch) || length(batch) != ncol(data)) {
-    stop("batch vector must be provided and its length must equal number of columns in data.")
-  }
+  .validate_intensity_matrix(data, require_nonnegative = TRUE)
+  .validate_batch(batch, ncol(data))
+  .validate_run_order(run_order, batch, ncol(data))
+  .validate_probability(fdr_threshold, "fdr_threshold")
+  .validate_flag(return_diagnostics, "return_diagnostics")
+  ljung_box_fitdf <- .validate_ljung_box_fitdf(ljung_box_fitdf)
   if (!identical(test, "Ljung-Box") && !identical(test, "DW")) {
     stop("test must be either 'Ljung-Box' or 'DW'.")
   }
@@ -496,10 +677,13 @@ autocorrelation_correct <- function(data,
 
   for (batch_index in seq_along(unique_batch)) {
     b <- unique_batch[[batch_index]]
-    idx <- which(batch_vec == b)
+    idx <- .ordered_batch_indices(batch_vec, b, run_order)
     segment <- data[, idx, drop = FALSE]
     segment_n <- length(idx)
-    model_df <- .autocorrelation_model_df(test = test)
+    model_df <- .autocorrelation_model_df(
+      test = test,
+      ljung_box_fitdf = ljung_box_fitdf
+    )
     segment_lag <- .resolve_autocorrelation_lag(
       lag = lag,
       n_obs = segment_n,
@@ -643,6 +827,7 @@ autocorrelation_correct <- function(data,
       segment_size = segment_n,
       testable = testable,
       lag = if (identical(test, "Ljung-Box")) segment_lag else NA_integer_,
+      ljung_box_fitdf = if (identical(test, "Ljung-Box")) model_df else NA_integer_,
       raw_p_value = as.numeric(p_values),
       adjusted_p_value = as.numeric(adjusted_values),
       selective_significance = selective_decision,
@@ -669,7 +854,10 @@ autocorrelation_correct <- function(data,
 #'
 #' This function runs an ANOVA test on each metabolite to detect batch effects,
 #' and then corrects significant batch effects by subtracting the estimated
-#' batch-specific shifts (while preserving the overall mean).
+#' batch-specific shifts (while preserving the overall mean). With the default
+#' selective gate, features that do not pass the FDR threshold are unchanged;
+#' this differs from [combat_batch_correction()], which applies an empirical
+#' Bayes location/scale model to every feature.
 #'
 #' @param data A numeric matrix (metabolites × samples).
 #' @param batch A factor or numeric vector indicating batch for each sample.
@@ -690,12 +878,10 @@ anova_batch_correction <- function(data,
                                    fdr_threshold = 0.05,
                                    gate = c("selective", "all", "none"),
                                    return_diagnostics = FALSE) {
-  if (!is.matrix(data) || !is.numeric(data)) {
-    stop("Data must be a numeric matrix.")
-  }
-  if (length(batch) != ncol(data)) {
-    stop("Length of batch must match number of columns in data.")
-  }
+  .validate_intensity_matrix(data, require_nonnegative = TRUE)
+  .validate_batch(batch, ncol(data))
+  .validate_probability(fdr_threshold, "fdr_threshold")
+  .validate_flag(return_diagnostics, "return_diagnostics")
   gate <- match.arg(gate)
   batch <- factor(batch)
   feature_ids <- rownames(data)
@@ -810,7 +996,9 @@ anova_batch_correction <- function(data,
 #' Perform ComBat Batch Correction by batch
 #'
 #' This function applies the empirical Bayes ComBat method to correct batch effects
-#' by batch, adjusting both location and scale parameters across batch.
+#' by batch, adjusting both location and scale parameters across batch. Unlike
+#' the default selective ANOVA gate in [anova_batch_correction()], ComBat is a
+#' global correction: every feature is passed to the empirical Bayes model.
 #'
 #' @param data A numeric matrix (metabolites × samples).
 #' @param batch A factor or numeric vector indicating batch for each sample.
@@ -828,16 +1016,19 @@ combat_batch_correction <- function(data,
                                     par_prior = TRUE,
                                     mean_only = FALSE,
                                     ref_batch = NULL) {
-  if (!is.matrix(data) || !is.numeric(data)) {
-    stop("Data must be a numeric matrix.")
-  }
-  if (length(batch) != ncol(data)) {
-    stop("Length of batch must match number of columns in data.")
-  }
+  .validate_intensity_matrix(data, require_nonnegative = TRUE)
+  .validate_batch(batch, ncol(data))
+  .validate_flag(par_prior, "par_prior")
+  .validate_flag(mean_only, "mean_only")
   if (!requireNamespace("sva", quietly = TRUE)) {
     stop("Package 'sva' is required for ComBat correction. Please install it.")
   }
   batch <- factor(batch)
+  if (!is.null(ref_batch) &&
+      (length(ref_batch) != 1L || is.na(ref_batch) ||
+       !as.character(ref_batch) %in% levels(batch))) {
+    stop("ref_batch must identify exactly one observed batch level.", call. = FALSE)
+  }
   if (length(unique(batch)) < 2) {
     message("Only one batch detected. Skipping ComBat-based correction.")
     return(data)
@@ -872,21 +1063,30 @@ combat_batch_correction <- function(data,
 #' scaled_data <- scale_by_batch(your_data_matrix, batch)
 #' @export
 scale_by_batch <- function(data, batch) {
-  if (!is.matrix(data) || !is.numeric(data)) {
-    stop("Data must be a numeric matrix.")
-  }
-  if (length(batch) != ncol(data)) {
-    stop("Length of batch must match number of columns in data.")
-  }
+  .validate_intensity_matrix(data)
+  .validate_batch(batch, ncol(data))
   
   scaled_data <- data
   batch_vec <- batch
   unique_batch <- unique(batch_vec)
   for (b in unique_batch) {
     idx <- which(batch_vec == b)
-    row_means <- rowMeans(data[, idx, drop = FALSE], na.rm = TRUE)
-    row_sds <- apply(data[, idx, drop = FALSE], 1, sd, na.rm = TRUE)
-    # Avoid division by zero by setting zero standard deviations to 1
+    if (length(idx) < 2L) {
+      stop(
+        "scale_by_batch() requires at least two samples in every batch; batch '",
+        as.character(b),
+        "' has ",
+        length(idx),
+        ".",
+        call. = FALSE
+      )
+    }
+    row_means <- rowMeans(data[, idx, drop = FALSE])
+    row_sds <- apply(data[, idx, drop = FALSE], 1, sd)
+    if (any(!is.finite(row_sds))) {
+      stop("Within-batch standard deviations must be finite.", call. = FALSE)
+    }
+    # A constant feature is centered but not divided by zero.
     row_sds[row_sds == 0] <- 1
     scaled_data[, idx] <- (data[, idx, drop = FALSE] - row_means) / row_sds
   }
@@ -909,31 +1109,56 @@ scale_by_batch <- function(data, batch) {
 #'
 #' When control samples are provided and parameters="auto", the function performs comprehensive parameter
 #' optimization by testing multiple combinations of settings and selecting those that maximize control sample
-#' correlation while minimizing coefficient of variation. This includes optimization of spline methods,
-#' FDR thresholds, normalization approaches, and scaling options.
+#' correlation while minimizing coefficient of variation. This searches spline
+#' methods, FDR thresholds, and normalization approaches while respecting the
+#' supplied autocorrelation-test family and `scale_by_batch` setting.
+#' Auto mode requires at least two controls. In auto mode, `fdr_threshold`,
+#' `spline_method`, and `median_adjustment` are fixed-mode settings and are
+#' replaced by the documented internal candidate grids. Other arguments still
+#' constrain the candidate family. Set `return_details = TRUE` to retain the
+#' selected settings and stage decisions in machine-readable form.
+#'
+#' The full pipeline expects finite, non-negative quantitative intensities.
+#' Zeros are treated as observed values and are not converted to missingness.
+#' Users should recode declared non-detection sentinels and impute missing
+#' values using a documented preprocessing policy before calling `winn()`.
 #'
 #' @param data A numeric matrix or data frame where rows represent metabolites and columns represent samples.
 #' @param batch An optional numeric vector indicating batch assignments for each sample. If NULL, segments will be auto-detected.
 #' @param run_order An optional numeric vector representing the run order of samples.
 #' @param control_samples An optional numeric vector representing the columns corresponding to control samples. If provided,
 #' these will be used for normalization and parameter tuning.
-#' @param parameters An optional character string specifying whether to use fixed ("fixed") or auto-detected ("auto") parameters in presence of control samples (default: "auto").
-#' @param fdr_threshold A numeric value specifying the FDR threshold for drift and batch corrections (default: 0.05).
-#' @param median_adjustment A character string specifying the method for median adjustment ("shrink", "normalize", or "none").
+#' @param parameters A character string specifying fixed (`"fixed"`, the
+#' default) or QC-tuned (`"auto"`) parameters. Auto mode requires controls.
+#' @param fdr_threshold Fixed-mode FDR threshold for drift and selective ANOVA
+#' batch correction. Auto mode searches 0.10, 0.05, and 0.01.
+#' @param median_adjustment Fixed-mode median adjustment (`"shrink"`,
+#' `"normalize"`, or `"none"`). Auto mode searches `"shrink"` and
+#' `"normalize"`.
 #' @param detrend_non_autocorrelated A character string specifying the method for detrending non-autocorrelated metabolites ("mean" or "spline").
-#' @param spline_method A character string specifying the spline method when detrend="spline" ("conservative" for robust drift removal or "standard" for traditional approach).
-#' @param remove_batch_effects A character string specifying the method for removing batch effects ("anova" or "combat").
+#' @param spline_method Fixed-mode spline method (`"conservative"` or
+#' `"standard"`). Auto mode searches both.
+#' @param remove_batch_effects Batch method. `"anova"` selectively corrects
+#' features that pass its FDR gate; `"combat"` applies global empirical Bayes
+#' location/scale correction to all features.
 #' @param test A character vector specifying the autocorrelation test(s)
 #' to use. Fixed mode requires a single value. Auto mode evaluates only the
 #' supplied tests, so `DW` is included only when explicitly requested.
 #' @param lag An optional integer specifying the lag for the autocorrelation test.
 #' If `NULL`, `autocorrelation_correct()` selects the lag adaptively for each
 #' batch segment.
+#' @param ljung_box_fitdf Non-negative integer passed to [stats::Box.test()].
+#' The default is `0` because no ARMA model is fitted. Use `1` only for legacy
+#' reproduction or a documented sensitivity analysis.
 #' @param scale_by_batch Logical indicating whether to scale data by batch after corrections.
 #' @param pelt_penalty Optional fkPELT penalty specification. Use a positive
 #' numeric value, `"bic"`, `"mbic"`, or `NULL`. When `NULL`, fkPELT uses
 #' the conservative MBIC default.
-#' @return A numeric matrix of corrected intensities.
+#' @param return_details Logical. The default `FALSE` returns the corrected
+#' matrix for backward compatibility. `TRUE` returns a `winn_result` list with
+#' the matrix, selected parameters, batch assignments, and stage decisions.
+#' @return A numeric matrix of corrected intensities, or a structured
+#' `winn_result` when `return_details = TRUE`.
 #' @examples
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' batch <- rep(1:4, length.out = ncol(your_data_matrix))
@@ -952,19 +1177,17 @@ winn <- function(data,
                  remove_batch_effects = "anova",
                  test = "Ljung-Box",
                  lag = NULL,
+                 ljung_box_fitdf = 0L,
                  scale_by_batch = FALSE,
-                 pelt_penalty = NULL) {
+                 pelt_penalty = NULL,
+                 return_details = FALSE) {
   # Input validation
   if (!is.matrix(data) && !is.data.frame(data)) {
     stop("Data must be a matrix or data frame.")
   }
   if (is.data.frame(data))
     data <- as.matrix(data)
-  if (!is.numeric(data))
-    stop("Data must be numeric.")
-  if (any(is.na(data) | is.infinite(data))) {
-    warning("Data contains NA or infinite values. Results may be unreliable.")
-  }
+  .validate_intensity_matrix(data, require_nonnegative = TRUE)
   
   n_samples <- ncol(data)
   n_metabolites <- nrow(data)
@@ -974,22 +1197,22 @@ winn <- function(data,
   if (n_metabolites < 1)
     stop("At least 1 metabolite required.")
   
-  if (!is.null(run_order) && length(run_order) != n_samples) {
-    stop("Length of run_order must match number of columns in data.")
-  }
-  
-  if (!is.null(control_samples)) {
-    if (any(is.na(match(control_samples, seq_len(n_samples))))) {
-      stop("Control samples should refer to valid column numbers in the data matrix.")
-    }
-    if (length(control_samples) < 2 && parameters == "auto") {
-      stop("At least 2 control samples required for parameter optimization.")
-    }
-  }
-  
   # Parameter validation
-  if (!parameters %in% c("fixed", "auto")) {
+  if (!is.character(parameters) || length(parameters) != 1L ||
+      !parameters %in% c("fixed", "auto")) {
     stop("parameters must be either 'fixed' or 'auto'.")
+  }
+  .validate_batch(batch, n_samples, required = FALSE)
+  .validate_run_order(run_order, batch, n_samples)
+  .validate_control_samples(control_samples, n_samples)
+  if (!is.null(control_samples)) {
+    control_samples <- as.integer(control_samples)
+  }
+  if (identical(parameters, "auto") && is.null(control_samples)) {
+    stop("parameters = 'auto' requires at least two control samples.")
+  }
+  if (identical(parameters, "auto") && length(control_samples) < 2L) {
+    stop("At least two control samples are required for parameter optimization.")
   }
   if (!spline_method %in% c("conservative", "standard")) {
     stop("spline_method must be either 'conservative' or 'standard'.")
@@ -1010,9 +1233,10 @@ winn <- function(data,
     stop("test must be length 1 when parameters = 'fixed'.")
   }
   
-  if (fdr_threshold <= 0 || fdr_threshold >= 1) {
-    stop("fdr_threshold must be between 0 and 1.")
-  }
+  .validate_probability(fdr_threshold, "fdr_threshold")
+  ljung_box_fitdf <- .validate_ljung_box_fitdf(ljung_box_fitdf)
+  .validate_flag(scale_by_batch, "scale_by_batch")
+  .validate_flag(return_details, "return_details")
   if (!is.null(lag) && (length(lag) != 1 || !is.numeric(lag) || is.na(lag) ||
     lag <= 0 || lag != round(lag))) {
     stop("lag must be NULL or a positive integer.")
@@ -1026,11 +1250,27 @@ winn <- function(data,
   }
   
   message("Starting Winn correction...")
-  
-  
+
+  batch_source <- if (is.null(batch)) "auto_detected" else "supplied"
+  stage_decisions <- list()
+  selected_parameters <- list()
+
   # Outlier adjustment
   message("Adjusting outliers using MAD...")
   norm_data <- adjust_outliers_mad(data)
+  if (isTRUE(return_details)) {
+    feature_ids <- rownames(data)
+    if (is.null(feature_ids)) {
+      feature_ids <- paste0("feature_", seq_len(nrow(data)))
+    }
+    outlier_delta <- abs(log1p(norm_data) - log1p(data))
+    stage_decisions$outlier <- data.frame(
+      feature_id = feature_ids,
+      entries_changed = rowSums(outlier_delta > 1e-12),
+      median_absolute_log1p_change = apply(outlier_delta, 1, median),
+      stringsAsFactors = FALSE
+    )
+  }
   
   # If control samples are provided and auto parameter detection is enabled, perform grid search
   if (!is.null(control_samples) && parameters == "auto") {
@@ -1068,6 +1308,7 @@ winn <- function(data,
     best_score <- -Inf
     best_final_data <- NULL
     best_params <- list()
+    best_batch <- NULL
     
     # Progress tracking for parameter optimization
     total_combinations <- length(batch_options) * length(tests) * length(spline_methods) *
@@ -1081,7 +1322,8 @@ winn <- function(data,
       } else {
         .auto_detect_batch(
           norm_data,
-          pelt_penalty = pelt_penalty
+          pelt_penalty = pelt_penalty,
+          run_order = run_order
         )
       }
       
@@ -1094,6 +1336,7 @@ winn <- function(data,
               batch = current_batch,
               lag = lag,
               test = current_test,
+              ljung_box_fitdf = ljung_box_fitdf,
               detrend = detrend_non_autocorrelated,
               spline_method = current_spline_method,
               max_fdr_threshold = if (detrend_non_autocorrelated == "mean") {
@@ -1202,10 +1445,17 @@ winn <- function(data,
                   if (quality_metrics$score > best_score) {
                     best_score <- quality_metrics$score
                     best_final_data <- final_data
+                    best_batch <- current_batch
                     best_params <- list(
+                      parameters = "auto",
                       batch_option = batch_option,
                       pelt_penalty = attr(current_batch, "pelt_penalty"),
                       test = current_test,
+                      ljung_box_fitdf = if (identical(current_test, "Ljung-Box")) {
+                        ljung_box_fitdf
+                      } else {
+                        "not used"
+                      },
                       lag = if (is.null(lag) && identical(current_test, "Ljung-Box")) {
                         "adaptive"
                       } else if (identical(current_test, "Ljung-Box")) {
@@ -1255,6 +1505,7 @@ winn <- function(data,
             ")")
     if (identical(best_params$test, "Ljung-Box")) {
       message("  Ljung-Box lag: ", best_params$lag)
+      message("  Ljung-Box fitdf: ", best_params$ljung_box_fitdf)
     }
     message("  Spline method: ", best_params$spline_method)
     message("  Batch correction FDR: ", best_params$anova_fdr)
@@ -1268,20 +1519,90 @@ winn <- function(data,
     )
     
     final_data <- best_final_data
+    batch <- best_batch
+    selected_parameters <- best_params
+    if (isTRUE(return_details)) {
+      drift_fdr <- if (identical(detrend_non_autocorrelated, "mean")) {
+        as.numeric(best_params$acorr_fdr)
+      } else {
+        fdr_threshold
+      }
+      drift_detail <- autocorrelation_correct(
+        norm_data,
+        run_order = run_order,
+        batch = batch,
+        lag = lag,
+        test = best_params$test,
+        ljung_box_fitdf = ljung_box_fitdf,
+        detrend = detrend_non_autocorrelated,
+        fdr_threshold = drift_fdr,
+        spline_method = best_params$spline_method,
+        return_diagnostics = TRUE
+      )
+      stage_decisions$drift <- drift_detail$diagnostics
+
+      if (identical(remove_batch_effects, "anova")) {
+        batch_detail <- anova_batch_correction(
+          drift_detail$data,
+          batch,
+          fdr_threshold = as.numeric(best_params$anova_fdr),
+          return_diagnostics = TRUE
+        )
+        batch_replayed <- batch_detail$data
+        stage_decisions$batch <- batch_detail$diagnostics
+      } else {
+        batch_replayed <- combat_batch_correction(drift_detail$data, batch)
+        stage_decisions$batch <- data.frame(
+          feature_id = if (is.null(rownames(data))) {
+            paste0("feature_", seq_len(nrow(data)))
+          } else {
+            rownames(data)
+          },
+          method = "ComBat",
+          scope = "global_all_features",
+          actual_correction = TRUE,
+          stringsAsFactors = FALSE
+        )
+      }
+
+      normalization_detail <- normalize_by_dilution_factor(
+        batch_replayed,
+        processing = best_params$normalization,
+        control_samples = control_samples,
+        return_diagnostics = TRUE
+      )
+      stage_decisions$dilution <- normalization_detail$diagnostics
+      replayed_final <- if (isTRUE(best_params$scale_by_batch)) {
+        scale_by_batch(normalization_detail$data, batch)
+      } else {
+        normalization_detail$data
+      }
+      if (!isTRUE(all.equal(
+        replayed_final,
+        best_final_data,
+        tolerance = 1e-8,
+        check.attributes = TRUE
+      ))) {
+        stop(
+          "Internal auto-mode replay did not reproduce the selected result.",
+          call. = FALSE
+        )
+      }
+      final_data <- replayed_final
+    }
   } else {
     # Use fixed parameters
     if (is.null(batch)) {
       message("No batch information provided. Auto-detecting segments using fkPELT...")
       batch <- .auto_detect_batch(
         norm_data,
-        pelt_penalty = pelt_penalty
+        pelt_penalty = pelt_penalty,
+        run_order = run_order
       )
       message("Auto-detected ", max(batch), " segments as batch.")
       message("fkPELT penalty used: ", round(attr(batch, "pelt_penalty"), 4))
     } else {
-      if (length(batch) != n_samples) {
-        stop("Length of batch must match number of columns in data.")
-      }
+      .validate_batch(batch, n_samples)
     }
     
     # Drift correction
@@ -1295,16 +1616,22 @@ winn <- function(data,
     if (identical(test, "Ljung-Box") && is.null(lag)) {
       message("Using adaptive Ljung-Box lag selection per batch segment.")
     }
-    drift_corrected <- autocorrelation_correct(
+    drift_result <- autocorrelation_correct(
       norm_data,
       run_order = run_order,
       batch = batch,
       lag = lag,
       test = test,
+      ljung_box_fitdf = ljung_box_fitdf,
       detrend = detrend_non_autocorrelated,
       fdr_threshold = fdr_threshold,
-      spline_method = spline_method
+      spline_method = spline_method,
+      return_diagnostics = return_details
     )
+    drift_corrected <- if (isTRUE(return_details)) drift_result$data else drift_result
+    if (isTRUE(return_details)) {
+      stage_decisions$drift <- drift_result$diagnostics
+    }
     
     
     # Batch effect correction via ANOVA
@@ -1315,23 +1642,66 @@ winn <- function(data,
         fdr_threshold,
         "..."
       )
-      batch_corrected <- anova_batch_correction(drift_corrected, batch, fdr_threshold = fdr_threshold)
+      batch_result <- anova_batch_correction(
+        drift_corrected,
+        batch,
+        fdr_threshold = fdr_threshold,
+        return_diagnostics = return_details
+      )
+      batch_corrected <- if (isTRUE(return_details)) batch_result$data else batch_result
+      if (isTRUE(return_details)) {
+        stage_decisions$batch <- batch_result$diagnostics
+      }
     } else {
       message("Testing and removing batch (batch) effects using ComBat")
       batch_corrected <- combat_batch_correction(drift_corrected, batch)
-      
+      if (isTRUE(return_details)) {
+        stage_decisions$batch <- data.frame(
+          feature_id = if (is.null(rownames(data))) {
+            paste0("feature_", seq_len(nrow(data)))
+          } else {
+            rownames(data)
+          },
+          method = "ComBat",
+          scope = "global_all_features",
+          actual_correction = TRUE,
+          stringsAsFactors = FALSE
+        )
+      }
     }
     
     # Median adjustment using control samples if provided
     if (median_adjustment == "none") {
       message("Skipping median adjustment.")
-      batch_corrected <- batch_corrected
+      if (isTRUE(return_details)) {
+        sample_ids <- colnames(data)
+        if (is.null(sample_ids)) {
+          sample_ids <- paste0("sample_", seq_len(ncol(data)))
+        }
+        stage_decisions$dilution <- data.frame(
+          sample_id = sample_ids,
+          altered = FALSE,
+          processing = "none",
+          stringsAsFactors = FALSE
+        )
+      }
     } else {
       message("Performing median adjustment using method: ",
               median_adjustment)
-      batch_corrected <- normalize_by_dilution_factor(batch_corrected,
-                                                      processing = median_adjustment,
-                                                      control_samples = control_samples)
+      dilution_result <- normalize_by_dilution_factor(
+        batch_corrected,
+        processing = median_adjustment,
+        control_samples = control_samples,
+        return_diagnostics = return_details
+      )
+      batch_corrected <- if (isTRUE(return_details)) {
+        dilution_result$data
+      } else {
+        dilution_result
+      }
+      if (isTRUE(return_details)) {
+        stage_decisions$dilution <- dilution_result$diagnostics
+      }
     }
     
     # Optional scaling by batch
@@ -1341,19 +1711,61 @@ winn <- function(data,
     } else {
       final_data <- batch_corrected
     }
+    selected_parameters <- list(
+      parameters = "fixed",
+      batch_source = batch_source,
+      pelt_penalty = attr(batch, "pelt_penalty"),
+      test = test,
+      ljung_box_fitdf = if (identical(test, "Ljung-Box")) {
+        ljung_box_fitdf
+      } else {
+        "not used"
+      },
+      lag = if (is.null(lag) && identical(test, "Ljung-Box")) {
+        "adaptive"
+      } else if (identical(test, "Ljung-Box")) {
+        as.integer(lag)
+      } else {
+        "not used"
+      },
+      fdr_threshold = fdr_threshold,
+      median_adjustment = median_adjustment,
+      detrend = detrend_non_autocorrelated,
+      spline_method = spline_method,
+      remove_batch_effects = remove_batch_effects,
+      scale_by_batch = scale_by_batch
+    )
   }
   
   message("Winn correction completed.")
-  return(final_data)
+  if (!isTRUE(return_details)) {
+    return(final_data)
+  }
+  result <- list(
+    data = final_data,
+    selected_parameters = selected_parameters,
+    batch = batch,
+    batch_source = batch_source,
+    run_order = if (is.null(run_order)) seq_len(n_samples) else run_order,
+    control_samples = control_samples,
+    stage_decisions = stage_decisions,
+    input_policy = list(
+      finite_nonnegative_required = TRUE,
+      zero_is_observed = TRUE,
+      automatic_zero_to_missing = FALSE
+    )
+  )
+  class(result) <- "winn_result"
+  result
 }
 
 ###############################################################################
 # Internal Helper Functions (not exported)
 ###############################################################################
 
-.autocorrelation_model_df <- function(test) {
+.autocorrelation_model_df <- function(test, ljung_box_fitdf = 0L) {
   if (identical(test, "Ljung-Box")) {
-    return(1L)
+    return(.validate_ljung_box_fitdf(ljung_box_fitdf))
   }
   0L
 }
@@ -1573,9 +1985,15 @@ winn <- function(data,
   mbic_penalty
 }
 
-.auto_detect_batch <- function(data, pelt_penalty = NULL) {
+.auto_detect_batch <- function(data, pelt_penalty = NULL, run_order = NULL) {
   # Auto-detect segments as batch using fkPELT based on aggregated median signal
-  agg_signal <- apply(data, 2, median, na.rm = TRUE)
+  .validate_run_order(run_order, batch = NULL, n_samples = ncol(data))
+  acquisition_order <- if (is.null(run_order)) {
+    seq_len(ncol(data))
+  } else {
+    order(run_order)
+  }
+  agg_signal <- apply(data[, acquisition_order, drop = FALSE], 2, median)
   n <- length(agg_signal)
   knots <- .make_fk_knots(n)
   resolved_penalty <- .resolve_pelt_penalty(
@@ -1583,7 +2001,9 @@ winn <- function(data,
     pelt_penalty = pelt_penalty
   )
   change_points <- .fkPELT(agg_signal, knots, penalty = resolved_penalty)
-  batch <- .make_batch_from_change_points(change_points, n)
+  detected_in_order <- .make_batch_from_change_points(change_points, n)
+  batch <- integer(n)
+  batch[acquisition_order] <- detected_in_order
   attr(batch, "pelt_penalty") <- resolved_penalty
   return(batch)
 }
@@ -1840,54 +2260,4 @@ winn <- function(data,
     return(0)
   neglog <- 2 * (sum((data - mu_val)^2 / (2 * sd_val^2)) + size * log(sd_val * sqrt(2 * pi)))
   return(neglog)
-}
-
-###############################################################################
-# Unit Tests (for interactive sessions)
-###############################################################################
-if (interactive()) {
-  library(testthat)
-  
-  test_that("normalize_by_dilution_factor works (with and without control samples)",
-            {
-              set.seed(1)
-              mat <- matrix(rnorm(100, mean = 100, sd = 15), nrow = 10)
-              res1 <- normalize_by_dilution_factor(mat)
-              res2 <- normalize_by_dilution_factor(mat, control_samples = 1:5)
-              expect_equal(dim(res1), dim(mat))
-              expect_equal(dim(res2), dim(mat))
-            })
-  
-  test_that("winn works with auto-detected batch", {
-    set.seed(1)
-    mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
-    res <- winn(mat)
-    expect_equal(dim(res), dim(mat))
-  })
-  
-  test_that("winn works with provided batch", {
-    set.seed(1)
-    mat <- matrix(rnorm(400, mean = 100, sd = 15), nrow = 20)
-    batch <- rep(1:4, each = 5)
-    run_order <- seq_len(ncol(mat))
-    res <- winn(mat, batch = batch, run_order = run_order)
-    expect_equal(dim(res), dim(mat))
-  })
-  
-  test_that("winn auto detection with control samples works", {
-    set.seed(1)
-    mat <- matrix(rnorm(400, mean = 100, sd = 15), nrow = 20)
-    batch <- rep(1:4, each = 5)
-    run_order <- seq_len(ncol(mat))
-    control_samples <- 1:4
-    res <- winn(
-      mat,
-      batch = batch,
-      run_order = run_order,
-      control_samples = control_samples,
-      parameters = "auto"
-    )
-    expect_equal(dim(res), dim(mat))
-    # Optionally, one might test that the mean correlation among controls is above a minimal threshold.
-  })
 }

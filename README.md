@@ -104,6 +104,7 @@ step2 <- autocorrelation_correct(
   batch = batch,
   lag = NULL,
   test = "Ljung-Box",
+  ljung_box_fitdf = 0,
   detrend = "mean"
 )
 
@@ -120,7 +121,10 @@ step5 <- scale_by_batch(step4, batch = batch)  # optional
 
 When pooled QCs are available and you want the package to search across
 parameter settings, use `parameters = "auto"`. That mode is slower because it
-evaluates multiple combinations using the package's QC quality score.
+evaluates multiple combinations using the package's QC quality score. Auto mode
+requires at least two controls. It searches its internal FDR, spline, and
+dilution-normalization grids; the corresponding `fdr_threshold`,
+`spline_method`, and `median_adjustment` arguments apply to fixed mode.
 
 ```r
 corrected_auto <- winn(
@@ -151,11 +155,27 @@ corrected_qc_agnostic <- winn(
 
 - Use `lag = NULL` unless you have a study-specific reason to force a fixed
   Ljung-Box lag.
-- Use `remove_batch_effects = "anova"` for a lightweight mean-only correction;
-  switch to `remove_batch_effects = "combat"` when you want empirical Bayes
-  adjustment and `sva` is available.
+- The Ljung-Box default is `ljung_box_fitdf = 0`, because WiNN does not fit an
+  ARMA model before testing. `ljung_box_fitdf = 1` is retained only for legacy
+  reproduction and sensitivity analysis.
+- With supplied `run_order`, WiNN sorts samples within each batch for both
+  serial-dependence testing and drift fitting, then restores the input column
+  order. If `run_order = NULL`, matrix-column order is treated as acquisition
+  order. Run-order values must be unique within each supplied batch.
+- Use `remove_batch_effects = "anova"` for selective, mean-only correction:
+  only features passing its FDR gate are shifted. Use
+  `remove_batch_effects = "combat"` for global empirical Bayes location/scale
+  adjustment of every feature when `sva` is available.
 - Keep `scale_by_batch = FALSE` when absolute abundance differences matter for
   downstream interpretation.
+- WiNN's log-based pipeline requires finite, non-negative quantitative
+  intensities. Numeric zeros are valid observations and are never recoded.
+  Convert explicit non-detection sentinels to missing values and apply a
+  documented imputation policy before calling `winn()`. Features with a zero
+  PQN reference median are excluded from dilution-factor estimation but remain
+  in the returned matrix; the estimated sample factors are still applied to
+  every feature. Samples whose dilution factor is zero are rejected with an
+  informative error.
 - The vignette provides a larger end-to-end example:
   `vignette("winn_tutorial", package = "winn")`.
 
@@ -173,6 +193,25 @@ drift and batch gates between selective, forced-all, and disabled modes. The
 function returns the intermediate matrices, diagnostics, runtimes, and complete
 configuration used for the run. It is intended for method evaluation and does
 not replace the standard `winn()` entry point.
+
+The main wrapper retains its matrix return by default. Set
+`return_details = TRUE` to receive a structured result containing `$data`, the
+selected fixed or automatic parameters, batch assignments, run order, control
+indices, and per-stage decisions.
+
+```r
+detailed <- winn(
+  observed_intensity,
+  batch = batch,
+  run_order = run_order,
+  control_samples = qc_idx,
+  parameters = "fixed",
+  return_details = TRUE
+)
+
+detailed$selected_parameters
+head(detailed$stage_decisions$drift)
+```
 
 ```r
 ablation <- winn_ablation(
@@ -197,6 +236,7 @@ thresholds are never recomputed after either tail is adjusted.
 
 If you use `winn`, cite the WiNN method paper:
 
-Demler O, Giulianini F, MacFarlane C, Tanna T, and collaborators (2024).
-"WiNNbeta: Batch and drift correction method by white noise normalization for
-metabolomic studies." arXiv preprint, arXiv:2404.07906.
+Demler O, Giulianini F, Liu Y, Londschien M, Sjöström A, Tanna T,
+Luttmann-Gibson H, and Jeanrenaud A (2024). "WiNNbeta: Batch and drift
+correction method by white noise normalization for metabolomic studies."
+arXiv:2404.07906. doi:10.48550/arXiv.2404.07906.

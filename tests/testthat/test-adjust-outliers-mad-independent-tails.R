@@ -28,7 +28,7 @@ test_that("lower-only MAD outliers are shrunk to the lower threshold", {
   expect_identical(adjusted[1L, 2:6], input[1L, 2:6])
 })
 
-test_that("simultaneous MAD tails use the intentional upper-priority policy", {
+test_that("simultaneous MAD tails are shrunk independently", {
   input <- matrix(
     c(-100, 9, 10, 10, 11, 100),
     nrow = 1L,
@@ -39,38 +39,49 @@ test_that("simultaneous MAD tails use the intentional upper-priority policy", {
 
   adjusted <- adjust_outliers_mad(input)
 
+  expect_equal(adjusted[1L, 1L], centre - 4 * spread)
   expect_equal(adjusted[1L, 6L], centre + 4 * spread)
-  expect_identical(adjusted[1L, 1L], input[1L, 1L])
   expect_identical(adjusted[1L, 2:5], input[1L, 2:5])
 })
 
-test_that("zero and undefined MAD retain their established edge behavior", {
-  constant <- matrix(
-    rep(5, 6L),
+test_that("both tails use thresholds computed once from original values", {
+  input <- matrix(
+    c(-100, -50, 9, 9, 10, 10, 10, 11, 11, 50, 100, NA_real_),
     nrow = 1L,
-    dimnames = list("constant_feature", paste0("sample_", seq_len(6L)))
+    dimnames = list("one_pass_feature", paste0("sample_", seq_len(12L)))
   )
-  expect_warning(
-    constant_adjusted <- adjust_outliers_mad(constant),
-    "no non-missing arguments to max"
-  )
-  expect_identical(constant_adjusted, constant)
+  original_finite <- input[1L, is.finite(input[1L, ])]
+  centre <- median(original_finite)
+  spread <- mad(original_finite)
+  lower_threshold <- centre - 4 * spread
+  upper_threshold <- centre + 4 * spread
 
-  undefined <- matrix(
-    rep(NA_real_, 6L),
-    nrow = 1L,
-    dimnames = list("missing_feature", paste0("sample_", seq_len(6L)))
-  )
-  expect_error(
-    adjust_outliers_mad(undefined),
-    "missing value where TRUE/FALSE needed"
-  )
+  adjusted <- adjust_outliers_mad(input)
+
+  expect_equal(adjusted[1L, 1L], lower_threshold)
+  expect_equal(adjusted[1L, 11L], upper_threshold)
+  expect_true(all(adjusted[1L, 1:2] <= centre - 3 * spread))
+  expect_true(all(adjusted[1L, 10:11] >= centre + 3 * spread))
+  expect_identical(adjusted[1L, 3:9], input[1L, 3:9])
+  expect_true(is.na(adjusted[1L, 12L]))
 })
 
-test_that("directional MAD adjustment preserves unflagged data and matrix structure", {
+test_that("zero-MAD and non-finite-only features pass through unchanged", {
+  input <- rbind(
+    constant = rep(5, 6L),
+    missing = rep(NA_real_, 6L),
+    mixed_nonfinite = c(NA_real_, Inf, -Inf, NA_real_, Inf, -Inf)
+  )
+
+  expect_silent(adjusted <- adjust_outliers_mad(input))
+  expect_identical(adjusted, input)
+})
+
+test_that("independent MAD adjustment preserves unflagged data and structure", {
   input <- rbind(
     upper = c(10, 11, 9, 10, 10, 100),
     lower = c(-100, 10, 11, 9, 10, 10),
+    both = c(-100, 9, 10, 10, 11, 100),
     unchanged = c(2, 3, 4, 5, 6, 7)
   )
   colnames(input) <- paste0("sample_", c(6, 2, 5, 1, 4, 3))

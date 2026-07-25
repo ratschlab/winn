@@ -14,12 +14,11 @@ A numeric matrix with adjusted outliers.
 }
 \description{
 This function adjusts outliers in a data matrix on a per-metabolite basis
-using the median absolute deviation (MAD). The policy is intentionally
-directional and single-tail: upper-tail values are shrunk whenever upper
-flags are present; lower-tail values are processed only when no upper-tail
-flags are present. Thus, for a feature with extremes in both tails, the
-upper-tail values are adjusted and the lower-tail values remain unchanged.
-High- and low-intensity extremes are not treated as equivalent.
+using the median absolute deviation (MAD). For each metabolite, the median,
+MAD, thresholds, and upper/lower outlier masks are computed once from the
+original finite values. Upper- and lower-tail values are then shrunk
+independently in one non-iterative pass; adjusting one tail cannot change
+the threshold or membership of the other tail.
 }
 \examples{
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)

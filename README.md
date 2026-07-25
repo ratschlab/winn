@@ -188,10 +188,10 @@ ablation <- winn_ablation(
 head(ablation$diagnostics$drift)
 ```
 
-The MAD preparation step uses a directional, upper-priority single-tail policy.
-When a feature has extremes in both tails, upper-tail values are shrunk and the
-lower-tail values are left unchanged. This is intentional behavior and is
-covered by regression tests.
+The MAD preparation step computes each feature's median, MAD, thresholds, and
+both outlier masks once from the original finite values. Upper and lower
+extremes are then shrunk independently in a single non-iterative pass. The
+thresholds are never recomputed after either tail is adjusted.
 
 ## Citation
 

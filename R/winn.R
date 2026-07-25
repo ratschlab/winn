@@ -94,12 +94,11 @@ normalize_by_dilution_factor <- function(data,
 #' Adjust Outliers in Data Matrix Using MAD
 #'
 #' This function adjusts outliers in a data matrix on a per-metabolite basis
-#' using the median absolute deviation (MAD). The policy is intentionally
-#' directional and single-tail: upper-tail values are shrunk whenever upper
-#' flags are present; lower-tail values are processed only when no upper-tail
-#' flags are present. Thus, for a feature with extremes in both tails, the
-#' upper-tail values are adjusted and the lower-tail values remain unchanged.
-#' High- and low-intensity extremes are not treated as equivalent.
+#' using the median absolute deviation (MAD). For each metabolite, the median,
+#' MAD, thresholds, and upper/lower outlier masks are computed once from the
+#' original finite values. Upper- and lower-tail values are then shrunk
+#' independently in one non-iterative pass; adjusting one tail cannot change
+#' the threshold or membership of the other tail.
 #'
 #' @param data A numeric matrix or data frame where rows represent metabolites and columns represent samples.
 #' @return A numeric matrix with adjusted outliers.
@@ -115,40 +114,48 @@ adjust_outliers_mad <- function(data) {
     data <- as.matrix(data)
   
   adjusted_data <- data
-  for (i in 1:nrow(data)) {
-    med <- median(data[i, ], na.rm = TRUE)
-    mad_val <- mad(data[i, ], na.rm = TRUE)
+  for (i in seq_len(nrow(data))) {
+    original <- data[i, ]
+    eligible <- is.finite(original)
+    if (!any(eligible)) {
+      next
+    }
+
+    med <- median(original[eligible])
+    mad_val <- mad(original[eligible])
+    if (!is.finite(mad_val) || mad_val <= 0) {
+      next
+    }
+
     lower_threshold <- med - 4 * mad_val
     upper_threshold <- med + 4 * mad_val
-    is_outlier <- data[i, ] <= lower_threshold |
-      data[i, ] >= upper_threshold
-    if (any(is_outlier)) {
-      # For upper outliers
-      if (any(is_outlier & data[i, ] >= upper_threshold)) {
-        ref_val <- max(data[i, !is_outlier &
-                              data[i, ] < upper_threshold], na.rm = TRUE)
-        interp_val <- med + 3 * mad_val
-        adjusted_data[i, is_outlier &
-                        data[i, ] >= upper_threshold] <-
-          approx(c(ref_val, max(data[i, is_outlier &
-                                       data[i, ] >= upper_threshold])),
-                 c(interp_val, upper_threshold),
-                 xout = data[i, is_outlier &
-                               data[i, ] >= upper_threshold])$y
-      } else {
-        ref_val <- min(data[i, is_outlier & data[i, ] <= lower_threshold])
-        interp_val <- med - 3 * mad_val
-        adjusted_data[i, is_outlier &
-                        data[i, ] <= lower_threshold] <-
-          approx(c(ref_val, min(data[i, !is_outlier &
-                                       data[i, ] > lower_threshold], na.rm = TRUE)),
-                 c(lower_threshold, interp_val),
-                 xout = data[i, is_outlier &
-                               data[i, ] <= lower_threshold])$y
-      }
+    upper_outlier <- eligible & original >= upper_threshold
+    lower_outlier <- eligible & original <= lower_threshold
+    central <- eligible & !upper_outlier & !lower_outlier
+
+    if (any(upper_outlier)) {
+      upper_reference <- max(original[central])
+      upper_extreme <- max(original[upper_outlier])
+      adjusted_data[i, upper_outlier] <- approx(
+        x = c(upper_reference, upper_extreme),
+        y = c(med + 3 * mad_val, upper_threshold),
+        xout = original[upper_outlier],
+        rule = 2
+      )$y
+    }
+
+    if (any(lower_outlier)) {
+      lower_extreme <- min(original[lower_outlier])
+      lower_reference <- min(original[central])
+      adjusted_data[i, lower_outlier] <- approx(
+        x = c(lower_extreme, lower_reference),
+        y = c(lower_threshold, med - 3 * mad_val),
+        xout = original[lower_outlier],
+        rule = 2
+      )$y
     }
   }
-  return(adjusted_data)
+  adjusted_data
 }
 
 # ---- internal: correct inverse for log1p ----

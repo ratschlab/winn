@@ -159,6 +159,40 @@ corrected_qc_agnostic <- winn(
 - The vignette provides a larger end-to-end example:
   `vignette("winn_tutorial", package = "winn")`.
 
+## Diagnostics and Ablations
+
+The correction operators can return their decision records without changing
+their usual matrix return values. Set `return_diagnostics = TRUE` for the drift,
+batch, or dilution step when an analysis needs to retain test results, selected
+features, fallback smoothers, correction magnitudes, or sample-level scaling
+factors.
+
+`winn_ablation()` provides a fixed-parameter interface for controlled workflow
+ablations. It uses the same package operators as `winn()` and can switch the
+drift and batch gates between selective, forced-all, and disabled modes. The
+function returns the intermediate matrices, diagnostics, runtimes, and complete
+configuration used for the run. It is intended for method evaluation and does
+not replace the standard `winn()` entry point.
+
+```r
+ablation <- winn_ablation(
+  observed_intensity,
+  batch = batch,
+  run_order = run_order,
+  control_samples = qc_idx,
+  drift_gate = "selective",
+  batch_gate = "all",
+  pqn_mode = "shrink"
+)
+
+head(ablation$diagnostics$drift)
+```
+
+The MAD preparation step computes each feature's median, MAD, thresholds, and
+both outlier masks once from the original finite values. Upper and lower
+extremes are then shrunk independently in a single non-iterative pass. The
+thresholds are never recomputed after either tail is adjusted.
+
 ## Citation
 
 If you use `winn`, cite the WiNN method paper:
@@ -166,4 +200,3 @@ If you use `winn`, cite the WiNN method paper:
 Demler O, Giulianini F, MacFarlane C, Tanna T, and collaborators (2024).
 "WiNNbeta: Batch and drift correction method by white noise normalization for
 metabolomic studies." arXiv preprint, arXiv:2404.07906.
-

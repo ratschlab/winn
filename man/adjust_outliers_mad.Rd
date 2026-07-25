@@ -13,7 +13,12 @@ adjust_outliers_mad(data)
 A numeric matrix with adjusted outliers.
 }
 \description{
-This function adjusts outliers in a data matrix on a per-metabolite basis using the Median Absolute Deviation (MAD).
+This function adjusts outliers in a data matrix on a per-metabolite basis
+using the median absolute deviation (MAD). For each metabolite, the median,
+MAD, thresholds, and upper/lower outlier masks are computed once from the
+original finite values. Upper- and lower-tail values are then shrunk
+independently in one non-iterative pass; adjusting one tail cannot change
+the threshold or membership of the other tail.
 }
 \examples{
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)

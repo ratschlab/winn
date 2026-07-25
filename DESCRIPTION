@@ -1,6 +1,6 @@
 Package: winn
 Title: White Noise Normalization for Metabolomics LC-MS Data
-Version: 0.1.1
+Version: 0.1.3
 Authors@R: person(given = "Tanmay", family = "Tanna", email = "ttanna@ethz.ch", role = c("aut", "cre"))
 Author: Tanmay Tanna [aut, cre]
 Maintainer: Tanmay Tanna <ttanna@ethz.ch>

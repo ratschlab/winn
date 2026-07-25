@@ -7,7 +7,8 @@
 normalize_by_dilution_factor(
   data,
   processing = "shrink",
-  control_samples = NULL
+  control_samples = NULL,
+  return_diagnostics = FALSE
 )
 }
 \arguments{
@@ -17,9 +18,13 @@ normalize_by_dilution_factor(
 
 \item{control_samples}{An optional numeric vector specifying which columns correspond to control samples.
 If provided, the reference spectrum is calculated using only these samples.}
+
+\item{return_diagnostics}{Logical; if \code{TRUE}, return the corrected matrix and
+sample-level dilution diagnostics in a list.}
 }
 \value{
-A numeric matrix of normalized intensities.
+A numeric matrix of normalized intensities, or a list containing the
+matrix and diagnostics when \code{return_diagnostics = TRUE}.
 }
 \description{
 This function normalizes a data matrix by dilution factors or alternatively shrinks sample measurements

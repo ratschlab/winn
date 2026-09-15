@@ -12,3 +12,4 @@
 ^\.\.Rcheck$
 ^vignettes/winn_tutorial\.html$
 ^winn_[0-9.]+\.tar\.gz$
+^cran-comments\.md$

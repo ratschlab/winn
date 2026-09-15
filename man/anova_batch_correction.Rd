@@ -38,6 +38,7 @@ this differs from \code{\link[=combat_batch_correction]{combat_batch_correction(
 Bayes location/scale model to every feature.
 }
 \examples{
+set.seed(1)
 mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
 batch <- rep(1:4, length.out=ncol(mat))
 corrected <- anova_batch_correction(mat, batch, fdr_threshold=0.05)

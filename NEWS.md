@@ -1,5 +1,9 @@
 # winn 0.1.4
 
+- Made the Bioconductor package `sva` optional for the ComBat correction path;
+  the default ANOVA workflow no longer requires a Bioconductor installation.
+- Added executable examples for all exported functions and seeded stochastic
+  examples for reproducible CRAN checks.
 - Made drift testing and smoothing honor `run_order` independently of matrix
   column order. Values are sorted within batch for testing and correction and
   restored to the caller's original column order.

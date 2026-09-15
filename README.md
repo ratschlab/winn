@@ -13,19 +13,24 @@ fkPELT-style change-point routine before downstream correction.
 
 ## Installation
 
-The current release is installed from GitHub. The package imports the
-Bioconductor package `sva` for the ComBat correction path.
+The current release is installed from GitHub. The default ANOVA correction
+path has no Bioconductor dependency. The optional ComBat correction path uses
+the Bioconductor package `sva`.
+
+```r
+if (!requireNamespace("remotes", quietly = TRUE)) {
+  install.packages("remotes")
+}
+remotes::install_github("ratschlab/winn")
+```
+
+If you plan to use `remove_batch_effects = "combat"`, install `sva` separately:
 
 ```r
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
 }
 BiocManager::install("sva")
-
-if (!requireNamespace("remotes", quietly = TRUE)) {
-  install.packages("remotes")
-}
-remotes::install_github("ratschlab/winn")
 ```
 
 After a CRAN release is published, `install.packages("winn")` will also work.
@@ -236,7 +241,6 @@ thresholds are never recomputed after either tail is adjusted.
 
 If you use `winn`, cite the WiNN method paper:
 
-Demler O, Giulianini F, Liu Y, Londschien M, Sjöström A, Tanna T,
-Luttmann-Gibson H, and Jeanrenaud A (2024). "WiNNbeta: Batch and drift
-correction method by white noise normalization for metabolomic studies."
-arXiv:2404.07906. doi:10.48550/arXiv.2404.07906.
+"WiNNbeta: Batch and drift correction method by white noise normalization for
+metabolomic studies" (2024). arXiv:2404.07906.
+doi:10.48550/arXiv.2404.07906.

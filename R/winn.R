@@ -152,6 +152,7 @@
 #' matrix and diagnostics when `return_diagnostics = TRUE`.
 #' @examples
 #' # Example usage:
+#' set.seed(1)
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' normalized_data <- normalize_by_dilution_factor(your_data_matrix, control_samples = 1:4)
 #' @export
@@ -272,6 +273,7 @@ normalize_by_dilution_factor <- function(data,
 #' @param data A numeric matrix or data frame where rows represent metabolites and columns represent samples.
 #' @return A numeric matrix with adjusted outliers.
 #' @examples
+#' set.seed(1)
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' adjusted_data <- adjust_outliers_mad(your_data_matrix)
 #' @export
@@ -625,6 +627,7 @@ adjust_outliers_mad <- function(data) {
 #' @return A numeric matrix with drift corrected, or a list containing the
 #' matrix and diagnostics when `return_diagnostics = TRUE`.
 #' @examples
+#' set.seed(1)
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' batch <- rep(1:4, length.out = ncol(your_data_matrix))
 #' run_order <- seq_len(ncol(your_data_matrix))
@@ -869,6 +872,7 @@ autocorrelation_correct <- function(data,
 #' @return A numeric matrix of corrected intensities, or a list containing the
 #' matrix and diagnostics when `return_diagnostics = TRUE`.
 #' @examples
+#' set.seed(1)
 #' mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
 #' batch <- rep(1:4, length.out=ncol(mat))
 #' corrected <- anova_batch_correction(mat, batch, fdr_threshold=0.05)
@@ -1007,9 +1011,12 @@ anova_batch_correction <- function(data,
 #' @param ref_batch Optional reference batch level for anchoring (default NULL).
 #' @return A numeric matrix of corrected intensities.
 #' @examples
-#' mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
-#' batch <- rep(1:4, length.out=ncol(mat))
-#' corrected <- combat_batch_correction(mat, batch, par_prior = TRUE)
+#' if (requireNamespace("sva", quietly = TRUE)) {
+#'   set.seed(1)
+#'   mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
+#'   batch <- rep(1:4, length.out=ncol(mat))
+#'   corrected <- combat_batch_correction(mat, batch, par_prior = TRUE)
+#' }
 #' @export
 combat_batch_correction <- function(data,
                                     batch,
@@ -1058,6 +1065,7 @@ combat_batch_correction <- function(data,
 #' @param batch A numeric vector indicating the batch (or segment) assignment for each sample.
 #' @return A numeric matrix of scaled intensities.
 #' @examples
+#' set.seed(1)
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' batch <- rep(1:4, length.out = ncol(your_data_matrix))
 #' scaled_data <- scale_by_batch(your_data_matrix, batch)
@@ -1160,6 +1168,7 @@ scale_by_batch <- function(data, batch) {
 #' @return A numeric matrix of corrected intensities, or a structured
 #' `winn_result` when `return_details = TRUE`.
 #' @examples
+#' set.seed(1)
 #' your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 #' batch <- rep(1:4, length.out = ncol(your_data_matrix))
 #' run_order <- seq_len(ncol(your_data_matrix))
@@ -1225,6 +1234,14 @@ winn <- function(data,
   }
   if (!remove_batch_effects %in% c("anova", "combat")) {
     stop("remove_batch_effects must be either 'anova' or 'combat'.")
+  }
+  if (identical(remove_batch_effects, "combat") &&
+      !requireNamespace("sva", quietly = TRUE)) {
+    stop(
+      "Package 'sva' is required when remove_batch_effects = 'combat'. ",
+      "Please install it from Bioconductor.",
+      call. = FALSE
+    )
   }
   if (!is.character(test) || length(test) < 1L || any(!test %in% c("Ljung-Box", "DW"))) {
     stop("test must contain only 'Ljung-Box' and/or 'DW'.")

@@ -18,6 +18,7 @@ A numeric matrix of scaled intensities.
 This function scales the values for each metabolite within each batch by subtracting the batch mean and dividing by the batch standard deviation.
 }
 \examples{
+set.seed(1)
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 batch <- rep(1:4, length.out = ncol(your_data_matrix))
 scaled_data <- scale_by_batch(your_data_matrix, batch)

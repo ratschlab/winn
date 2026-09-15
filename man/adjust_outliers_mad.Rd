@@ -25,6 +25,7 @@ requires finite, non-negative input. Numeric zeros are treated as observed
 values and are never automatically converted to missing values.
 }
 \examples{
+set.seed(1)
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 adjusted_data <- adjust_outliers_mad(your_data_matrix)
 }

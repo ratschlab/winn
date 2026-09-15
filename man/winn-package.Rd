@@ -61,11 +61,11 @@ Useful links:
 
 }
 \author{
-\strong{Maintainer}: Tanmay Tanna \email{ttanna@ethz.ch}
+\strong{Maintainer}: Tanmay Tanna \email{ttanna@ethz.ch} [copyright holder]
 
 Authors:
 \itemize{
-  \item Tanmay Tanna \email{ttanna@ethz.ch}
+  \item Tanmay Tanna \email{ttanna@ethz.ch} [copyright holder]
 }
 
 }

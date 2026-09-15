@@ -27,6 +27,19 @@
 #'
 #' @return A list containing the final matrix, intermediate matrices,
 #' diagnostics, stage runtimes, and the exact fixed configuration.
+#' @examples
+#' set.seed(1)
+#' example_data <- matrix(abs(rnorm(120, mean = 100, sd = 15)), nrow = 10)
+#' example_batch <- rep(1:3, each = 4)
+#' example_result <- winn_ablation(
+#'   example_data,
+#'   batch = example_batch,
+#'   run_order = seq_len(ncol(example_data)),
+#'   drift_gate = "none",
+#'   batch_gate = "none",
+#'   pqn_mode = "none"
+#' )
+#' dim(example_result$data)
 #' @export
 winn_ablation <- function(data,
                           batch,

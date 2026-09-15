@@ -61,6 +61,7 @@ every segment is sorted by that vector for both testing and smoothing, and
 the corrected values are then restored to the original matrix-column order.
 }
 \examples{
+set.seed(1)
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 batch <- rep(1:4, length.out = ncol(your_data_matrix))
 run_order <- seq_len(ncol(your_data_matrix))

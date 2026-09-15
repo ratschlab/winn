@@ -109,6 +109,7 @@ Users should recode declared non-detection sentinels and impute missing
 values using a documented preprocessing policy before calling \code{winn()}.
 }
 \examples{
+set.seed(1)
 your_data_matrix <- matrix(rnorm(200, mean = 100, sd = 15), nrow = 20)
 batch <- rep(1:4, length.out = ncol(your_data_matrix))
 run_order <- seq_len(ncol(your_data_matrix))

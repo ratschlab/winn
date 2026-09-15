@@ -4,7 +4,6 @@ bibentry(
   bibtype = "Unpublished",
   title = "WiNNbeta: Batch and drift correction method by white noise normalization for metabolomic studies",
   author = c(
-    person("Olga", "Demler"),
     person("Franco", "Giulianini"),
     person("Yanyan", "Liu"),
     person("Malte", "Londschien"),

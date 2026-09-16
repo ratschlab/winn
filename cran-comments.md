@@ -13,10 +13,12 @@ This is a resubmission following the incoming checks for winn 0.1.4 dated
    `--run-donttest` pass of `R CMD check --as-cran`. A small ComBat integration
    test also exercises batch correction in the routine test suite.
 
-2. The Title and Description fields have been rewritten in plain language.
-   The words flagged by the incoming spellchecker no longer occur in
-   DESCRIPTION. The title is now "White Noise Normalization for Chemical
-   Profiling Data". The complete, accurate method citation is retained in
+2. The Title and Description fields have been revised. The title is now
+   "White Noise Normalization for Mass Spectrometry Profiling Data".
+   "Spectrometry" is the correct scientific term for the analytical technique
+   and has been retained in the title. If flagged, it is a spelling false
+   positive. All other previously flagged words have been removed from
+   DESCRIPTION. The complete, accurate method citation is retained in
    inst/CITATION and the README.
 
 The "New submission" NOTE is expected because winn is not yet on CRAN.
@@ -37,5 +39,5 @@ All 95 test expectations passed, with no failures, warnings, or skips.
 Vignette rebuilding and PDF and HTML manual checks passed.
 
 The CRAN additional incoming spelling check is not enabled in the local
-environment; all words flagged in the previous submission have been removed
-from DESCRIPTION.
+environment. The retained scientific term "Spectrometry" is explained above;
+all other previously flagged words have been removed from DESCRIPTION.

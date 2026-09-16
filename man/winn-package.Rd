@@ -39,7 +39,7 @@ treated as observed and are never silently converted to missing values.
 \itemize{
 \item \code{mgcv} for spline-based drift detrending
 \item \code{lmtest} for the Durbin-Watson autocorrelation test
-\item \code{sva} for ComBat batch correction
+\item \code{sva} (optional) for ComBat batch correction
 }
 }
 
@@ -61,11 +61,11 @@ Useful links:
 
 }
 \author{
-\strong{Maintainer}: Tanmay Tanna \email{ttanna@ethz.ch} [copyright holder]
+\strong{Maintainer}: Tanmay Tanna \email{tanmay@tanmaytanna.com} [copyright holder]
 
 Authors:
 \itemize{
-  \item Tanmay Tanna \email{ttanna@ethz.ch} [copyright holder]
+  \item Tanmay Tanna \email{tanmay@tanmaytanna.com} [copyright holder]
 }
 
 }

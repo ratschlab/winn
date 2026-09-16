@@ -28,7 +28,7 @@
 #' @section Dependencies:
 #' - `mgcv` for spline-based drift detrending
 #' - `lmtest` for the Durbin-Watson autocorrelation test
-#' - `sva` for ComBat batch correction
+#' - `sva` (optional) for ComBat batch correction
 #'
 #' @section Recommended usage:
 #' - Provide `batch` and `run_order` whenever possible.

@@ -241,6 +241,10 @@ thresholds are never recomputed after either tail is adjusted.
 
 If you use `winn`, cite the WiNN method paper:
 
-"WiNNbeta: Batch and drift correction method by white noise normalization for
-metabolomic studies" (2024). arXiv:2404.07906.
-doi:10.48550/arXiv.2404.07906.
+Demler O, Giulianini F, Liu Y, Londschien M, Sjöström A, Tanna T,
+Luttmann-Gibson H, and Jeanrenaud A (2024). "WiNNbeta: Batch and drift
+correction method by white noise normalization for metabolomic studies."
+arXiv:2404.07906. <https://doi.org/10.48550/arXiv.2404.07906>.
+
+This is the citation for the underlying method paper. The `winn` R package
+is authored and maintained by Tanmay Tanna.

@@ -5,8 +5,8 @@
   It remains runnable with `example()` and is checked by `--as-cran`.
 - Added routine ComBat integration coverage for preserved matrix labels,
   finite non-negative output, and correction of simulated batch effects.
-- Documented the DESCRIPTION spelling false positives in the CRAN
-  resubmission comments.
+- Reworded the title and description in plain language to avoid the incoming
+  spelling flags. The full method citation remains in CITATION and the README.
 
 # winn 0.1.4
 

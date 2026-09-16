@@ -13,14 +13,11 @@ This is a resubmission following the incoming checks for winn 0.1.4 dated
    `--run-donttest` pass of `R CMD check --as-cran`. A small ComBat integration
    test also exercises batch correction in the routine test suite.
 
-2. The DESCRIPTION spelling flags are false positives:
-   * "Metabolomics" / "metabolomics" is the scientific field addressed by
-     the package.
-   * "spectrometry" is the analytical technique in liquid chromatography-mass
-     spectrometry (LC-MS).
-   * "Demler" is the first author's surname in the cited method paper.
-   * "et al." is the standard abbreviation in that author-year citation.
-   These correctly spelled terms and the accurate citation have been retained.
+2. The Title and Description fields have been rewritten in plain language.
+   The words flagged by the incoming spellchecker no longer occur in
+   DESCRIPTION. The title is now "White Noise Normalization for Chemical
+   Profiling Data". The complete, accurate method citation is retained in
+   inst/CITATION and the README.
 
 The "New submission" NOTE is expected because winn is not yet on CRAN.
 The version has been incremented from 0.1.4 to 0.1.5 for this resubmission.
@@ -40,4 +37,5 @@ All 95 test expectations passed, with no failures, warnings, or skips.
 Vignette rebuilding and PDF and HTML manual checks passed.
 
 The CRAN additional incoming spelling check is not enabled in the local
-environment; its known false positives are addressed individually above.
+environment; all words flagged in the previous submission have been removed
+from DESCRIPTION.

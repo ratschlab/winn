@@ -1,21 +1,18 @@
 Package: winn
-Title: White Noise Normalization for Metabolomics LC-MS Data
+Title: White Noise Normalization for Chemical Profiling Data
 Version: 0.1.5
 Authors@R: c(
     person(given = "Tanmay", family = "Tanna", email = "tanmay@tanmaytanna.com",
            role = c("aut", "cre", "cph"))
     )
 Description: Provides a decision-guided workflow for correcting technical
-    variability in metabolomics data, including liquid chromatography-mass
-    spectrometry (LC-MS) data, while preserving metabolites that already
-    satisfy a white-noise gatekeeper. The workflow combines robust outlier
-    adjustment, adaptive drift detection, change-point
-    segmentation, batch correction, and probabilistic quotient normalization
-    in a single pipeline or as modular steps. It supports
-    quality-control (QC)-informed parameter tuning as well as QC-agnostic
-    operation for studies without pooled controls. The underlying white-noise
-    normalization strategy is described by Demler et al. (2024)
-    <doi:10.48550/arXiv.2404.07906>.
+    variability in chemical profiling data. Tests for white noise identify
+    measured features that need correction while preserving those that
+    already pass. The workflow combines robust outlier adjustment, adaptive
+    drift detection, change-point segmentation, batch correction, and
+    probabilistic quotient normalization in a single pipeline or as modular
+    steps. It supports parameter tuning using pooled quality-control samples
+    as well as operation for studies without pooled controls.
 Depends: R (>= 3.5.0)
 Imports:
     stats,

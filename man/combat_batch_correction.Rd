@@ -33,10 +33,13 @@ the default selective ANOVA gate in \code{\link[=anova_batch_correction]{anova_b
 global correction: every feature is passed to the empirical Bayes model.
 }
 \examples{
+\donttest{
+# Loading the optional Bioconductor dependency can take more than five seconds.
 if (requireNamespace("sva", quietly = TRUE)) {
   set.seed(1)
   mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
   batch <- rep(1:4, length.out=ncol(mat))
   corrected <- combat_batch_correction(mat, batch, par_prior = TRUE)
+}
 }
 }

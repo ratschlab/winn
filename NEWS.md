@@ -1,3 +1,13 @@
+# winn 0.1.5
+
+- Marked the optional ComBat example as a longer-running example because
+  loading its Bioconductor dependency can exceed five seconds on CRAN.
+  It remains runnable with `example()` and is checked by `--as-cran`.
+- Added routine ComBat integration coverage for preserved matrix labels,
+  finite non-negative output, and correction of simulated batch effects.
+- Documented the DESCRIPTION spelling false positives in the CRAN
+  resubmission comments.
+
 # winn 0.1.4
 
 - Made the Bioconductor package `sva` optional for the ComBat correction path;

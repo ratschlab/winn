@@ -1011,11 +1011,14 @@ anova_batch_correction <- function(data,
 #' @param ref_batch Optional reference batch level for anchoring (default NULL).
 #' @return A numeric matrix of corrected intensities.
 #' @examples
+#' \donttest{
+#' # Loading the optional Bioconductor dependency can take more than five seconds.
 #' if (requireNamespace("sva", quietly = TRUE)) {
 #'   set.seed(1)
 #'   mat <- matrix(rnorm(200, mean = 100, sd = 15), nrow=20)
 #'   batch <- rep(1:4, length.out=ncol(mat))
 #'   corrected <- combat_batch_correction(mat, batch, par_prior = TRUE)
+#' }
 #' }
 #' @export
 combat_batch_correction <- function(data,

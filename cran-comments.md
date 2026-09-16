@@ -1,22 +1,43 @@
-# CRAN submission comments
+# CRAN resubmission: winn 0.1.5
 
-## Test environments
+This is a resubmission following the incoming checks for winn 0.1.4 dated
+2026-09-16. Thank you for reviewing the package.
 
-* Local macOS Tahoe 26.6.2, R 4.6.1 (aarch64):
-  `R CMD check --as-cran --timings winn_0.1.4.tar.gz`
-* HTML manual validation used HTML Tidy 5.8.0.
+## Changes addressing the incoming checks
 
-## R CMD check results
+1. The Debian check reported 5.143 seconds for the ComBat example. Loading
+   the optional Bioconductor package sva accounts for most of the runtime.
+   The example is now wrapped in `\donttest{}` with an explanatory comment,
+   following the CRAN Cookbook guidance for examples exceeding five seconds.
+   It remains executable with `example()` and is exercised by the additional
+   `--run-donttest` pass of `R CMD check --as-cran`. A small ComBat integration
+   test also exercises batch correction in the routine test suite.
 
-There were 0 ERRORs, 0 WARNINGs, and 1 NOTE: `New submission`.
+2. The DESCRIPTION spelling flags are false positives:
+   * "Metabolomics" / "metabolomics" is the scientific field addressed by
+     the package.
+   * "spectrometry" is the analytical technique in liquid chromatography-mass
+     spectrometry (LC-MS).
+   * "Demler" is the first author's surname in the cited method paper.
+   * "et al." is the standard abbreviation in that author-year citation.
+   These correctly spelled terms and the accurate citation have been retained.
 
-All 90 test expectations passed without failures, warnings, or skips.
-Examples, vignette rebuilding, and PDF and HTML manual checks passed.
+The "New submission" NOTE is expected because winn is not yet on CRAN.
+The version has been incremented from 0.1.4 to 0.1.5 for this resubmission.
 
-This is the first CRAN submission of winn, version 0.1.4. The optional `sva`
-dependency is a Bioconductor package used only for the ComBat correction path;
-the default ANOVA path does not require it.
+Reference for the example change:
+<https://contributor.r-project.org/cran-cookbook/general_issues.html#structuring-of-examples>
 
-Tanmay Tanna is the sole package author and maintainer, with contact address
-tanmay@tanmaytanna.com. The bibliography credits the full author list of the
-underlying method paper separately from package authorship.
+## Validation
+
+The source tarball was produced with `R CMD build .` and checked with
+`R CMD check --as-cran --timings winn_0.1.5.tar.gz` on macOS arm64, R 4.6.1,
+using HTML Tidy 5.8.0.
+
+There were 0 ERRORs, 0 WARNINGs, and 1 NOTE: "New submission". The normal
+examples and the additional examples with `--run-donttest` both passed.
+All 95 test expectations passed, with no failures, warnings, or skips.
+Vignette rebuilding and PDF and HTML manual checks passed.
+
+The CRAN additional incoming spelling check is not enabled in the local
+environment; its known false positives are addressed individually above.

@@ -13,18 +13,15 @@ fkPELT-style change-point routine before downstream correction.
 
 ## Installation
 
-The current release is installed from GitHub. The default ANOVA correction
-path has no Bioconductor dependency. The optional ComBat correction path uses
-the Bioconductor package `sva`.
+Install the released version from CRAN:
 
 ```r
-if (!requireNamespace("remotes", quietly = TRUE)) {
-  install.packages("remotes")
-}
-remotes::install_github("ratschlab/winn")
+install.packages("winn")
 ```
 
-If you plan to use `remove_batch_effects = "combat"`, install `sva` separately:
+The default ANOVA correction path has no Bioconductor dependency. The optional
+ComBat correction path uses the Bioconductor package `sva`. If you plan to use
+`remove_batch_effects = "combat"`, install `sva` separately:
 
 ```r
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
@@ -33,7 +30,14 @@ if (!requireNamespace("BiocManager", quietly = TRUE)) {
 BiocManager::install("sva")
 ```
 
-After a CRAN release is published, `install.packages("winn")` will also work.
+The development version can be installed from GitHub:
+
+```r
+if (!requireNamespace("remotes", quietly = TRUE)) {
+  install.packages("remotes")
+}
+remotes::install_github("ratschlab/winn")
+```
 
 ## Reproducible Example
 

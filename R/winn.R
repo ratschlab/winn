@@ -346,7 +346,7 @@ adjust_outliers_mad <- function(data) {
       fit <- .fit_conservative_spline(log_seg, seg_run)
     } else {
       fit <- tryCatch(
-        mgcv::gam(log_seg ~ mgcv::s(seg_run, bs = "cr")),
+        mgcv::gam(log_seg ~ s(seg_run, bs = "cr")),
         error = function(e)
           NULL
       )
@@ -758,7 +758,7 @@ autocorrelation_correct <- function(data,
         .fit_conservative_spline(log_seg, seg_run)
       } else {
         standard_fit <- tryCatch(
-          mgcv::gam(log_seg ~ mgcv::s(seg_run, bs = "cr")),
+          mgcv::gam(log_seg ~ s(seg_run, bs = "cr")),
           error = function(e) NULL
         )
         if (is.null(standard_fit)) {
@@ -2118,7 +2118,7 @@ winn <- function(data,
   # Try multiple approaches in order of conservatism
   # 1. P-splines with REML and gamma penalty
   fit <- tryCatch({
-    mgcv::gam(y ~ mgcv::s(x, bs = "ps", k = k_max),
+    mgcv::gam(y ~ s(x, bs = "ps", k = k_max),
               method = "REML",
               gamma = 1.4)  # Conservative gamma > 1
   }, error = function(e)
@@ -2134,7 +2134,7 @@ winn <- function(data,
   
   # 2. Thin plate splines with conservative settings
   fit <- tryCatch({
-    mgcv::gam(y ~ mgcv::s(x, bs = "tp", k = k_max),
+    mgcv::gam(y ~ s(x, bs = "tp", k = k_max),
               method = "REML",
               gamma = 1.2)
   }, error = function(e)
@@ -2150,7 +2150,7 @@ winn <- function(data,
   
   # 3. Cubic regression splines with fixed df (very conservative)
   fit <- tryCatch({
-    mgcv::gam(y ~ mgcv::s(
+    mgcv::gam(y ~ s(
       x,
       bs = "cr",
       k = min(6, k_max),

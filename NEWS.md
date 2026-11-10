@@ -1,3 +1,16 @@
+# winn 0.1.6
+
+- Fixed smooth terms in drift correction. Drift-smoothing formulas wrote the
+  smooth term as `mgcv::s()`, which mgcv's formula parser does not recognise
+  as a smooth. Every spline fit therefore failed silently: the conservative
+  smoother (`spline_method = "conservative"`, the default) fell back to
+  `loess(span = 0.3)`, and the standard smoother fell back to a linear fit.
+  Smooth terms now use `s()`, so drift correction fits the documented
+  REML P-spline (conservative) or cubic regression spline (standard).
+  Results change for every drift-corrected feature.
+- Added regression tests that require the documented smoother in both modes
+  and for drift corrections made through `winn()`.
+
 # winn 0.1.5
 
 - Marked the optional ComBat example as a longer-running example because

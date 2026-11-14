@@ -1,11 +1,11 @@
 # winn
 
-`winn` implements White Noise Normalization for metabolomics LC-MS data. The
-package applies a decision-guided correction pipeline: each metabolite is first
-tested for serial dependence, and only metabolites that fail the white-noise
-gatekeeper are drift-corrected. This keeps stable features untouched while
-still correcting drift, batch structure, dilution effects, and outliers when
-they are present.
+`winn` implements White Noise Normalization for mass spectrometry profiling
+data. After outlier preparation, the package tests each feature for serial
+dependence and detrends only the selected feature-segment profiles. A separate
+test selects features for mean-only batch adjustment. Outlier preparation and
+optional dilution normalization can also change features that are not selected
+by either test.
 
 The package supports both QC-informed tuning and QC-agnostic workflows. If
 batch labels are unavailable, `winn()` can infer batch-like segments with an
@@ -61,7 +61,8 @@ base_log <- matrix(rnorm(n_met * n_samples, mean = 8, sd = 0.15), nrow = n_met)
 true_log <- base_log
 
 signal_metabolites <- 1:4
-study_signal <- as.numeric(scale(sin(study_idx / 6) + rnorm(length(study_idx), sd = 0.2)))
+# Randomized biology: do not encode the biological target as a run-order trend.
+study_signal <- as.numeric(scale(rnorm(length(study_idx))))
 true_log[signal_metabolites, study_idx] <- true_log[signal_metabolites, study_idx] +
   0.35 * matrix(
     study_signal,
@@ -159,6 +160,29 @@ corrected_qc_agnostic <- winn(
   pelt_penalty = "mbic"
 )
 ```
+
+## Study design and interpretation
+
+WiNN assumes that the biological variables of interest are independent of
+acquisition order and batch. Randomize the acquisition design and check its
+balance before correction. When biological groups follow the run order or
+occupy different batches, correction can remove real biological differences;
+low held-out QC CV does not establish that biology was preserved.
+
+The Ljung-Box test detects serial dependence, not its cause. Periodic controls
+that differ systematically from study samples can generate dependence without
+instrumental drift. Its asymptotic p-values can also be poorly calibrated in
+short segments, so applying Benjamini-Hochberg at 5% does not guarantee 5%
+false-discovery control in every acquisition design. Inspect diagnostics and
+use independent biological contrasts or replicates to assess preservation.
+
+The main `winn()` wrapper always applies MAD outlier shrinkage. Rare biological
+responses can be reduced by this preparation. PQN can also reduce widespread,
+coordinated abundance changes. In fixed mode, `median_adjustment = "none"`
+disables PQN but does not disable MAD preparation. If either response pattern
+is the biological target, use and validate an appropriate alternative
+preparation workflow; the standalone correction operators are available for
+that purpose.
 
 ## Practical Notes
 
